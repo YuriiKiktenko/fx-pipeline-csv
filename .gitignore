@@ -1,15 +1,21 @@
-.venv/
+airflow/config/*
+airflow/logs/*
+airflow/plugins/*
+
 __pycache__/
 *.pyc
-.env
+*.pyo
+
+*.env
 *.json.key
-data/
-raw/
-processed/
-*.parquet
-*.csv
-*.zip
-logs/
+# *.parquet
+# *.csv
+# *.zip
+
 .vscode/
 .idea/
-test/
+.test/
+
+docker-volume/
+
+!.gitkeep
