@@ -13,6 +13,7 @@ __pycache__/
 # *.zip
 
 .vscode/
+.venv/
 .idea/
 .test/
 
