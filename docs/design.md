@@ -56,7 +56,7 @@ Below each task is documented with:
 
 ---
 
-# Step 1 – Ingest ZIP file (scheduled runs only)
+# Step 1 - Ingest ZIP file
 
 ## Goal
 
@@ -100,3 +100,47 @@ Steps:
 * Remove temp file.
 
 Output for downstream steps: `{hash_id, gcs_zip_uri, new_snapshot}`.
+
+## Step 2 - Extract CSV from ZIP
+
+### Goal
+
+Take the ZIP snapshot already stored in GCS, extract the single CSV file it contains, and upload that CSV back to GCS in a deterministic location.
+
+This step is executed **only when a new snapshot hash is detected**. Runs for already‑known hashes will be short‑circuited by a separate `check_new_snapshot` task based on XCom from Step 1.
+
+---
+
+### Potential Problems
+
+* ZIP object missing or inaccessible in GCS.
+* CSV extraction fails.
+* GCS upload of the CSV partially fails or leaves inconsistent state.
+
+---
+
+### Mitigations
+
+* Use the `gcs_zip_uri` and `hash_id` coming from Step 1 XCom.
+* Log CSV size and key metadata.
+* Propagate the resulting `gcs_csv_uri` via XCom for downstream tasks.
+
+---
+
+### Implementation Notes
+
+Implement as `extract_csv_from_zip` (PythonOperator).
+
+Input: function receives explicit arguments hash_id and gcs_zip_uri (plus optional config if needed). The DAG is responsible for pulling these values from XCom (result of ingest_zip_snapshot) 
+
+This task is placed **after** a `ShortCircuitOperator` that skips execution when `new_snapshot` is `False`.
+
+
+Steps:
+  * Download the ZIP from GCS to a temp file.
+  * Extract that CSV into another temp file.
+  * Upload the CSV temp file to GCS bucket under `csv/hash_id=.../file.csv`.
+  * Update metadata_log with (`gcs_csv_uri`, `csv_size`, `unpacked_at`);
+  * Remove temp files.
+
+Output for downstream steps: `{hash_id, gcs_csv_uri}`.
