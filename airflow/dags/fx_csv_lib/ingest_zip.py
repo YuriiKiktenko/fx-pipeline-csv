@@ -65,6 +65,30 @@ def _validate_zip(path):
     logger.info(f"ZIP {path} validated successfully")
 
 
+def _check_meta(bq_client, log_table_fqn, hash_id):
+    select_query = f"""
+    SELECT gcs_zip_uri
+    FROM `{log_table_fqn}`
+    WHERE hash_id = @hash_id
+    LIMIT 1
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("hash_id", "STRING", hash_id)],
+    )
+
+    job = bq_client.query(select_query, job_config=job_config)
+    row = next(job.result(), None)
+
+    if row is None:
+        return False
+
+    if not row["gcs_zip_uri"]:
+        raise RuntimeError(f"Metadata integrity error: bad gcs_zip_uri for hash_id={hash_id}")
+
+    return True
+
+
 def ingest_zip_snapshot():
     """
     Download the ECB FX ZIP, validate it, upload to GCS and log metadata in BigQuery.
@@ -72,8 +96,6 @@ def ingest_zip_snapshot():
     Returns:
         dict: {
             "hash_id": str,
-            "gcs_zip_uri": str,
-            "new_snapshot": bool,
         }
     """
     tmp_path = None
@@ -91,24 +113,9 @@ def ingest_zip_snapshot():
         _validate_zip(tmp_path)
         hash_id = _compute_sha256(tmp_path)
 
-        query = f"""
-        SELECT hash_id, gcs_zip_uri
-        FROM `{log_table_fqn}`
-        WHERE hash_id = @hash_id
-        LIMIT 1
-        """
-
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[bigquery.ScalarQueryParameter("hash_id", "STRING", hash_id)],
-        )
-
-        job = bq_client.query(query, job_config=job_config)
-        result = next(job.result(), None)
-        if result:
+        if _check_meta(bq_client, log_table_fqn, hash_id):
             result_dict = {
-                "hash_id": result["hash_id"],
-                "gcs_zip_uri": result["gcs_zip_uri"],
-                "new_snapshot": False,
+                "hash_id": hash_id,
             }
             logger.info("Existing snapshot found")
             return result_dict
@@ -118,14 +125,28 @@ def ingest_zip_snapshot():
         zip_blob_path = f"zip/hash_id={hash_id}/eurofxref-hist.zip"
         zip_blob = raw_bucket.blob(zip_blob_path)
         zip_blob.upload_from_filename(tmp_path)
+        zip_blob.reload()
+        if zip_blob.size is None or zip_blob.size != file_size:
+            raise RuntimeError(f"Uploaded ZIP size mismatch: local={file_size}, gcs={zip_blob.size}")
 
         gcs_zip_uri = f"gs://{cfg.GS_RAW_BUCKET}/{zip_blob_path}"
         ingested_at = dt.datetime.now(dt.timezone.utc)
 
-        query = f"""
-        INSERT INTO `{log_table_fqn}` (hash_id, gcs_zip_uri, file_size, ingested_at)
-        VALUES (@hash_id, @gcs_zip_uri, @file_size, @ingested_at)
+        merge_query = f"""
+        MERGE `{log_table_fqn}` T
+        USING (
+            SELECT
+                @hash_id     AS hash_id,
+                @gcs_zip_uri AS gcs_zip_uri,
+                @file_size   AS file_size,
+                @ingested_at AS ingested_at
+        ) S
+        ON T.hash_id = S.hash_id
+        WHEN NOT MATCHED THEN
+        INSERT (hash_id, gcs_zip_uri, file_size, ingested_at)
+        VALUES (S.hash_id, S.gcs_zip_uri, S.file_size, S.ingested_at)
         """
+
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
                 bigquery.ScalarQueryParameter("hash_id", "STRING", hash_id),
@@ -135,17 +156,19 @@ def ingest_zip_snapshot():
             ]
         )
 
-        job = bq_client.query(query, job_config=job_config)
+        job = bq_client.query(merge_query, job_config=job_config)
         job.result()
 
-        result_dict = {
-            "hash_id": hash_id,
-            "gcs_zip_uri": gcs_zip_uri,
-            "new_snapshot": True,
-        }
+        logger.info(f"MERGE insert-only affected {job.num_dml_affected_rows} rows for hash_id={hash_id}")
 
-        logger.info("Ingestion completed")
-        return result_dict
+        if _check_meta(bq_client, log_table_fqn, hash_id):
+            result_dict = {
+                "hash_id": hash_id,
+            }
+            logger.info("Ingestion completed")
+            return result_dict
+
+        raise RuntimeError(f"Ingestion completed but meta row missing for hash_id={hash_id}")
 
     finally:
         if tmp_path and os.path.exists(tmp_path):

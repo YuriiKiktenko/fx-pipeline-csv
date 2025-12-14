@@ -99,15 +99,14 @@ Steps:
   * insert into metadata_log a new row (`hash_id`, `gcs_zip_uri`, `file_size`, `ingested_at`);
 * Remove temp file.
 
-Output for downstream steps: `{hash_id, gcs_zip_uri, new_snapshot}`.
+Output for downstream steps: `{hash_id}`.
 
 ## Step 2 - Extract CSV from ZIP
 
 ### Goal
 
-Take the ZIP snapshot already stored in GCS, extract the single CSV file it contains, and upload that CSV back to GCS in a deterministic location.
-
-This step is executed **only when a new snapshot hash is detected**. Runs for already‑known hashes will be short‑circuited by a separate `check_new_snapshot` task based on XCom from Step 1.
+Take the ZIP snapshot referenced by hash_id already stored in GCS, extract the single CSV file it contains, and upload that CSV back to GCS in a deterministic location, update metadata.
+If CSV for this hash_id is already present (metadata + optional blob existence check), return immediately.
 
 ---
 
@@ -121,9 +120,10 @@ This step is executed **only when a new snapshot hash is detected**. Runs for al
 
 ### Mitigations
 
-* Use the `gcs_zip_uri` and `hash_id` coming from Step 1 XCom.
+* Use the `hash_id` coming from Step 1 XCom.
+* Get the `gcs_zip_uri` from metadata.
 * Log CSV size and key metadata.
-* Propagate the resulting `gcs_csv_uri` via XCom for downstream tasks.
+* Post-update verification: ensure metadata was updated (affected_rows > 0) and gcs_csv_uri is readable.
 
 ---
 
@@ -131,16 +131,15 @@ This step is executed **only when a new snapshot hash is detected**. Runs for al
 
 Implement as `extract_csv_from_zip` (PythonOperator).
 
-Input: function receives explicit arguments hash_id and gcs_zip_uri (plus optional config if needed). The DAG is responsible for pulling these values from XCom (result of ingest_zip_snapshot) 
-
-This task is placed **after** a `ShortCircuitOperator` that skips execution when `new_snapshot` is `False`.
-
+Input: function receives explicit hash_id (plus optional config if needed). The DAG is responsible for pulling this value from XCom (result of ingest_zip_snapshot) 
 
 Steps:
+  * Get the `gcs_zip_uri` and `gcs_csv_uri` from metadata.
+  * If `gcs_csv_uri` exists and blob exist in the bucket - early return `{hash_id}`
   * Download the ZIP from GCS to a temp file.
   * Extract that CSV into another temp file.
   * Upload the CSV temp file to GCS bucket under `csv/hash_id=.../file.csv`.
   * Update metadata_log with (`gcs_csv_uri`, `csv_size`, `unpacked_at`);
   * Remove temp files.
 
-Output for downstream steps: `{hash_id, gcs_csv_uri}`.
+Output for downstream steps: `{hash_id}`.
