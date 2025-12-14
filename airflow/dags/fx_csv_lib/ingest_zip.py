@@ -44,6 +44,18 @@ def _compute_sha256(path):
     return digest
 
 
+def _parse_gcs_uri(uri):
+    if not uri.startswith("gs://"):
+        raise ValueError(f"Invalid GCS URI: {uri}")
+
+    no_scheme = uri[5:]
+    if "/" not in no_scheme:
+        raise ValueError(f"Invalid GCS URI, expected gs://bucket/blob: {uri}")
+
+    bucket, blob = no_scheme.split("/", 1)
+    return bucket, blob
+
+
 def _validate_zip(path):
     with zipfile.ZipFile(path, "r") as zf:
         bad_member = zf.testzip()
@@ -65,7 +77,7 @@ def _validate_zip(path):
     logger.info(f"ZIP {path} validated successfully")
 
 
-def _check_meta(bq_client, log_table_fqn, hash_id):
+def _get_zip_uri_from_meta(bq_client, log_table_fqn, hash_id):
     select_query = f"""
     SELECT gcs_zip_uri
     FROM `{log_table_fqn}`
@@ -81,12 +93,12 @@ def _check_meta(bq_client, log_table_fqn, hash_id):
     row = next(job.result(), None)
 
     if row is None:
-        return False
+        return None
 
     if not row["gcs_zip_uri"]:
         raise RuntimeError(f"Metadata integrity error: bad gcs_zip_uri for hash_id={hash_id}")
 
-    return True
+    return row["gcs_zip_uri"]
 
 
 def ingest_zip_snapshot():
@@ -113,12 +125,12 @@ def ingest_zip_snapshot():
         _validate_zip(tmp_path)
         hash_id = _compute_sha256(tmp_path)
 
-        if _check_meta(bq_client, log_table_fqn, hash_id):
-            result_dict = {
-                "hash_id": hash_id,
-            }
-            logger.info("Existing snapshot found")
-            return result_dict
+        if gcs_zip_uri := _get_zip_uri_from_meta(bq_client, log_table_fqn, hash_id):
+            bucket, blob = _parse_gcs_uri(gcs_zip_uri)
+            if storage_client.bucket(bucket).blob(blob).exists():
+                logger.info("Existing snapshot found in meta and ZIP exists in GCS")
+                return {"hash_id": hash_id}
+            raise RuntimeError(f"Metadata points to missing ZIP object: {gcs_zip_uri}")
 
         logger.info("No existing snapshot found, proceeding with upload")
         raw_bucket = storage_client.bucket(cfg.GS_RAW_BUCKET)
@@ -161,13 +173,11 @@ def ingest_zip_snapshot():
 
         logger.info(f"MERGE insert-only affected {job.num_dml_affected_rows} rows for hash_id={hash_id}")
 
-        if _check_meta(bq_client, log_table_fqn, hash_id):
-            result_dict = {
-                "hash_id": hash_id,
-            }
-            logger.info("Ingestion completed")
-            return result_dict
-
+        if meta_uri := _get_zip_uri_from_meta(bq_client, log_table_fqn, hash_id):
+            if meta_uri == gcs_zip_uri:
+                logger.info("Ingestion completed")
+                return {"hash_id": hash_id}
+            raise RuntimeError(f"Meta URI mismatch for hash_id={hash_id}: meta={meta_uri}, expected={gcs_zip_uri}")
         raise RuntimeError(f"Ingestion completed but meta row missing for hash_id={hash_id}")
 
     finally:
