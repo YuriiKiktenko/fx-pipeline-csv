@@ -115,6 +115,7 @@ If CSV for this hash_id is already present (metadata + optional blob existence c
 * ZIP object missing or inaccessible in GCS.
 * CSV extraction fails.
 * GCS upload of the CSV partially fails or leaves inconsistent state.
+* Metadata points to missing artifact (CSV or ZIP) due to manual deletion or partial previous runs
 
 ---
 
@@ -136,10 +137,10 @@ Input: function receives explicit hash_id (plus optional config if needed). The 
 Steps:
   * Get the `gcs_zip_uri` and `gcs_csv_uri` from metadata.
   * If `gcs_csv_uri` exists and blob exist in the bucket - early return `{hash_id}`
-  * Download the ZIP from GCS to a temp file.
+  * Verify ZIP blob exists in GCS, then download it to a temp file.
   * Extract that CSV into another temp file.
   * Upload the CSV temp file to GCS bucket under `csv/hash_id=.../file.csv`.
-  * Update metadata_log with (`gcs_csv_uri`, `csv_size`, `unpacked_at`);
+  * Update metadata_log with (`gcs_csv_uri`, `csv_size`, `unpacked_at`) and validate update result.
   * Remove temp files.
 
 Output for downstream steps: `{hash_id}`.
