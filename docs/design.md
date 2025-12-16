@@ -96,7 +96,7 @@ Steps:
 * If such hash exists → reuse that snapshot, skip upload.
 * If hash is new:
   * upload temp ZIP to GCS using deterministic path (`zip/hash_id=.../file.zip`);
-  * insert into metadata_log a new row (`hash_id`, `gcs_zip_uri`, `file_size`, `ingested_at`);
+  * insert into metadata_log a new row (`hash_id`, `gcs_zip_uri`, `zip_size`, `ingested_at`);
 * Remove temp file.
 
 Output for downstream steps: `{hash_id}`.

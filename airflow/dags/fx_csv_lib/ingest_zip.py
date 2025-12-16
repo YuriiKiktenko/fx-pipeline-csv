@@ -4,12 +4,12 @@ import datetime as dt
 import logging
 
 from google.cloud import storage, bigquery
-from google.api_core.exceptions import PreconditionFailed
 
 import fx_csv_lib.config as cfg
 from fx_csv_lib.helpers import (
     compute_sha256,
     download_stream_to_file,
+    upload_file_to_blob,
     validate_zip,
     get_meta_row_by_hash,
     validate_gcs_blob,
@@ -49,48 +49,44 @@ def ingest_zip_snapshot():
         dict: {"hash_id": str}
     """
 
-    tmp_path = None
+    zip_tmp_path = None
     try:
         bq_client = bigquery.Client(project=cfg.GC_PROJECT_ID)
         log_table_fqn = f"{cfg.GC_PROJECT_ID}.{cfg.BQ_META_DATASET}.{cfg.BQ_META_LOG_TABLE}"
 
         storage_client = storage.Client(project=cfg.GC_PROJECT_ID)
-        raw_bucket = storage_client.bucket(cfg.GS_RAW_BUCKET)
 
         with tempfile.NamedTemporaryFile(prefix="fx_zip_", suffix=".zip", delete=False) as tmp:
-            tmp_path = tmp.name
-        logger.info(f"Temp file {tmp_path} created")
+            zip_tmp_path = tmp.name
+        logger.info(f"Temp file {zip_tmp_path} created")
 
-        file_size = download_stream_to_file(cfg.FX_ZIP_URL, tmp_path, cfg.MAX_ZIP_SIZE)
-        logger.info(f"Download finished: {file_size} bytes written to {tmp_path}")
+        zip_file_size = download_stream_to_file(cfg.FX_ZIP_URL, zip_tmp_path, cfg.MAX_ZIP_SIZE)
+        logger.info(f"Download finished: {zip_file_size} bytes written to {zip_tmp_path}")
 
-        validate_zip(tmp_path)
-        logger.info(f"ZIP {tmp_path} validated successfully")
+        validate_zip(zip_tmp_path)
+        logger.info(f"ZIP {zip_tmp_path} validated successfully")
 
-        hash_id = compute_sha256(tmp_path)
-        logger.info(f"SHA256 for {tmp_path}: {hash_id}")
+        hash_id = compute_sha256(zip_tmp_path)
+        logger.info(f"SHA256 for {zip_tmp_path}: {hash_id}")
 
         zip_blob_path = f"zip/hash_id={hash_id}/eurofxref-hist.zip"
         gcs_zip_uri = f"gs://{cfg.GS_RAW_BUCKET}/{zip_blob_path}"
 
-        if meta_row := get_meta_row_by_hash(bq_client, log_table_fqn, hash_id, ["gcs_zip_uri", "file_size"]):
-            validate_meta_row(meta_row, hash_id, ["gcs_zip_uri", "file_size"], {"gcs_zip_uri": gcs_zip_uri})
-            validate_gcs_blob(storage_client, meta_row["gcs_zip_uri"], hash_id, meta_row["file_size"])
+        if meta_row := get_meta_row_by_hash(bq_client, log_table_fqn, hash_id, ["gcs_zip_uri", "zip_size"]):
+            validate_meta_row(
+                meta_row, hash_id, ["gcs_zip_uri", "zip_size"], {"gcs_zip_uri": gcs_zip_uri, "zip_size": zip_file_size}
+            )
+            validate_gcs_blob(storage_client, meta_row["gcs_zip_uri"], hash_id, meta_row["zip_size"])
 
             logger.info("Existing snapshot found in meta and correct ZIP exists in GCS")
             return {"hash_id": hash_id}
 
         logger.info("No existing snapshot found in meta, proceeding with upload")
-        zip_blob = raw_bucket.blob(zip_blob_path)
-        zip_blob.metadata = {"sha256": hash_id}
 
-        try:
-            zip_blob.upload_from_filename(tmp_path, if_generation_match=0)
-            logger.info("Uploaded new ZIP")
-        except PreconditionFailed:
-            logger.info("ZIP already exists in GCS (possibly from a previous run or a concurrent ingestion), reusing it")
+        log_msg = upload_file_to_blob(storage_client, gcs_zip_uri, zip_tmp_path, hash_id)
+        validate_gcs_blob(storage_client, gcs_zip_uri, hash_id, zip_file_size)
 
-        validate_gcs_blob(storage_client, gcs_zip_uri, hash_id, file_size)
+        logger.info(f"{log_msg}: {gcs_zip_uri}")
         ingested_at = dt.datetime.now(dt.timezone.utc)
 
         merge_query = f"""
@@ -99,20 +95,20 @@ def ingest_zip_snapshot():
             SELECT
                 @hash_id     AS hash_id,
                 @gcs_zip_uri AS gcs_zip_uri,
-                @file_size   AS file_size,
+                @zip_size    AS zip_size,
                 @ingested_at AS ingested_at
         ) S
         ON T.hash_id = S.hash_id
         WHEN NOT MATCHED THEN
-        INSERT (hash_id, gcs_zip_uri, file_size, ingested_at)
-        VALUES (S.hash_id, S.gcs_zip_uri, S.file_size, S.ingested_at)
+        INSERT (hash_id, gcs_zip_uri, zip_size, ingested_at)
+        VALUES (S.hash_id, S.gcs_zip_uri, S.zip_size, S.ingested_at)
         """
 
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
                 bigquery.ScalarQueryParameter("hash_id", "STRING", hash_id),
                 bigquery.ScalarQueryParameter("gcs_zip_uri", "STRING", gcs_zip_uri),
-                bigquery.ScalarQueryParameter("file_size", "INT64", file_size),
+                bigquery.ScalarQueryParameter("zip_size", "INT64", zip_file_size),
                 bigquery.ScalarQueryParameter("ingested_at", "TIMESTAMP", ingested_at),
             ]
         )
@@ -120,26 +116,28 @@ def ingest_zip_snapshot():
         job = bq_client.query(merge_query, job_config=job_config)
         job.result()
 
-        affected = job.num_dml_affected_rows or 0
-        if affected == 0:
+        rows_affected = job.num_dml_affected_rows or 0
+        if rows_affected == 0:
             logger.info(f"MERGE inserted 0 rows for hash_id={hash_id} (likely concurrent ingestion already inserted metadata)")
         else:
-            logger.info(f"MERGE insert-only affected {job.num_dml_affected_rows} rows in metadata for hash_id={hash_id}")
+            logger.info(f"MERGE insert-only affected {rows_affected} rows in metadata for hash_id={hash_id}")
 
-        if meta_row := get_meta_row_by_hash(bq_client, log_table_fqn, hash_id, ["gcs_zip_uri", "file_size"]):
-            validate_meta_row(meta_row, hash_id, ["gcs_zip_uri", "file_size"], {"gcs_zip_uri": gcs_zip_uri})
+        if meta_row := get_meta_row_by_hash(bq_client, log_table_fqn, hash_id, ["gcs_zip_uri", "zip_size"]):
+            validate_meta_row(
+                meta_row, hash_id, ["gcs_zip_uri", "zip_size"], {"gcs_zip_uri": gcs_zip_uri, "zip_size": zip_file_size}
+            )
 
             logger.info("Ingestion completed")
             return {"hash_id": hash_id}
         raise RuntimeError(f"Ingestion completed but meta row missing for hash_id={hash_id}")
 
     finally:
-        if tmp_path and os.path.exists(tmp_path):
+        if zip_tmp_path and os.path.exists(zip_tmp_path):
             try:
-                os.remove(tmp_path)
-                logger.info(f"Temp file {tmp_path} deleted")
+                os.remove(zip_tmp_path)
+                logger.info(f"Temp file {zip_tmp_path} deleted")
             except Exception as err:
-                logger.warning(f"Failed to delete temp file {tmp_path}: {err}")
+                logger.warning(f"Failed to delete temp file {zip_tmp_path}: {err}")
 
 
 if __name__ == "__main__":
