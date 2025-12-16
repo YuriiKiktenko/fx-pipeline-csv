@@ -1,72 +1,74 @@
 import os
 import tempfile
 import datetime as dt
-import zipfile
 import logging
 
 from google.cloud import storage, bigquery
 
 import fx_csv_lib.config as cfg
+from fx_csv_lib.helpers import (
+    download_blob_to_file,
+    extract_csv,
+    get_meta_row_by_hash,
+    upload_file_to_blob,
+    validate_gcs_blob,
+    validate_meta_row,
+)
 
 logger = logging.getLogger(__name__)
-
-CHUNK_SIZE = 8192
-
-
-def _parse_gcs_uri(uri):
-    if not uri.startswith("gs://"):
-        raise ValueError(f"Invalid GCS URI: {uri}")
-
-    no_scheme = uri[5:]
-    if "/" not in no_scheme:
-        raise ValueError(f"Invalid GCS URI, expected gs://bucket/blob: {uri}")
-
-    bucket, blob = no_scheme.split("/", 1)
-    return bucket, blob
 
 
 def extract_csv_from_zip(hash_id):
     """
-    Download ZIP from GCS, extract the single CSV, upload it back to GCS
-    under a deterministic hash-based path, and update metadata_log.
+    Extract a CSV file from an already ingested ZIP snapshot in GCS.
 
-    Args:
-        hash_id (str): snapshot (zip) hash
+    Workflow:
+        1) Load metadata for the given hash_id and validate the ZIP snapshot.
+        2) If CSV metadata already exists:
+            - Validate metadata fields.
+            - Verify the referenced CSV object exists in GCS and matches size and hash_id.
+            - Return early.
+        3) Otherwise:
+            - Download the ZIP from GCS to a local temporary file.
+            - Extract the single CSV file.
+            - Upload the CSV to a deterministic, hash_id based GCS location.
+            - Update metadata using a conditional MERGE.
+
+    Guarantees:
+        - CSV objects are immutable and content-addressed by ZIP hash_id.
+        - Concurrent or repeated runs converge to a single consistent CSV snapshot.
+        - No existing data is overwritten.
+
+    Success contract:
+        - Returns {"hash_id": <sha256>}.
+        - A corresponding CSV object exists in GCS.
+        - Metadata row contains consistent gcs_csv_uri and csv_size.
 
     Returns:
-        dict: {
-            "hash_id": str,
-        }
+        dict: {"hash_id": str}
     """
+
     zip_tmp_path = None
     csv_tmp_path = None
-
     try:
         bq_client = bigquery.Client(project=cfg.GC_PROJECT_ID)
-        storage_client = storage.Client(project=cfg.GC_PROJECT_ID)
-
         log_table_fqn = f"{cfg.GC_PROJECT_ID}.{cfg.BQ_META_DATASET}.{cfg.BQ_META_LOG_TABLE}"
 
-        select_query = f"""
-        SELECT gcs_zip_uri, gcs_csv_uri
-        FROM `{log_table_fqn}`
-        WHERE hash_id = @hash_id
-        LIMIT 1
-        """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[bigquery.ScalarQueryParameter("hash_id", "STRING", hash_id)],
-        )
-        job = bq_client.query(select_query, job_config=job_config)
-        row = next(job.result(), None)
-        if not row or not row["gcs_zip_uri"]:
-            raise RuntimeError(f"metadata_log has no gcs_zip_uri for hash_id={hash_id}.")
+        storage_client = storage.Client(project=cfg.GC_PROJECT_ID)
 
-        if gcs_csv_uri := row["gcs_csv_uri"]:
-            bucket, blob = _parse_gcs_uri(gcs_csv_uri)
-            if storage_client.bucket(bucket).blob(blob).exists():
-                logger.info("CSV already extracted for this hash_id (meta + GCS confirmed)")
-                return {"hash_id": hash_id}
-            raise RuntimeError(f"Metadata points to missing CSV object: {gcs_csv_uri}")
+        csv_blob_path = f"csv/hash_id={hash_id}/eurofxref-hist.csv"
+        gcs_csv_uri = f"gs://{cfg.GS_RAW_BUCKET}/{csv_blob_path}"
+
+        meta_row = get_meta_row_by_hash(bq_client, log_table_fqn, hash_id, ["gcs_zip_uri", "zip_size", "gcs_csv_uri", "csv_size"])
+        validate_meta_row(meta_row, hash_id, ["gcs_zip_uri", "zip_size"])
+        validate_gcs_blob(storage_client, meta_row["gcs_zip_uri"], hash_id, meta_row["zip_size"])
+
+        if meta_row["gcs_csv_uri"]:
+            validate_meta_row(meta_row, hash_id, ["gcs_csv_uri", "csv_size"], {"gcs_csv_uri": gcs_csv_uri})
+            validate_gcs_blob(storage_client, meta_row["gcs_csv_uri"], hash_id, meta_row["csv_size"])
+
+            logger.info("CSV already extracted for this hash_id (meta + GCS confirmed)")
+            return {"hash_id": hash_id}
 
         logger.info("No existing CSV found in meta, proceeding with extraction")
         with tempfile.NamedTemporaryFile(prefix="fx_zip_", suffix=".zip", delete=False) as tmp_zip:
@@ -77,56 +79,35 @@ def extract_csv_from_zip(hash_id):
             csv_tmp_path = tmp_csv.name
         logger.info(f"Temp file {csv_tmp_path} created")
 
-        gcs_zip_uri = row["gcs_zip_uri"]
-        bucket_name, blob_name = _parse_gcs_uri(gcs_zip_uri)
-
-        zip_blob = storage_client.bucket(bucket_name).blob(blob_name)
-        if not zip_blob.exists():
-            raise RuntimeError(f"Metadata points to missing ZIP object: {gcs_zip_uri}")
-        zip_blob.download_to_filename(zip_tmp_path)
-
+        download_blob_to_file(storage_client, meta_row["gcs_zip_uri"], zip_tmp_path)
         logger.info(f"ZIP downloaded to {zip_tmp_path}")
 
-        with zipfile.ZipFile(zip_tmp_path, "r") as zf:
-            names = zf.namelist()
-            if len(names) != 1:
-                raise ValueError(f"ZIP must contain exactly one file, found {len(names)} files")
-
-            csv_name = names[0]
-            if not csv_name.lower().endswith(".csv"):
-                raise ValueError(f"ZIP file must contain a .csv file, found '{csv_name}'")
-
-            with zf.open(csv_name, "r") as src, open(csv_tmp_path, "wb") as dst:
-                total_bytes = 0
-                while chunk := src.read(CHUNK_SIZE):
-                    dst.write(chunk)
-                    total_bytes += len(chunk)
-            if total_bytes == 0:
-                raise RuntimeError("Extracted CSV has size 0 bytes")
-        
+        total_bytes = extract_csv(zip_tmp_path, csv_tmp_path)
         logger.info(f"CSV extracted to {csv_tmp_path}, size={total_bytes} bytes")
 
-        raw_bucket = storage_client.bucket(cfg.GS_RAW_BUCKET)
-        csv_blob_path = f"csv/hash_id={hash_id}/eurofxref-hist.csv"
-        csv_blob = raw_bucket.blob(csv_blob_path)
-        csv_blob.upload_from_filename(csv_tmp_path)
-        csv_blob.reload()
-        if csv_blob.size is None or csv_blob.size != total_bytes:
-            raise RuntimeError(f"Uploaded CSV size mismatch: local={total_bytes}, gcs={csv_blob.size}")
+        log_msg = upload_file_to_blob(storage_client, gcs_csv_uri, csv_tmp_path, hash_id)
+        validate_gcs_blob(storage_client, gcs_csv_uri, hash_id, total_bytes)
 
-        gcs_csv_uri = f"gs://{cfg.GS_RAW_BUCKET}/{csv_blob_path}"
+        logger.info(f"{log_msg}: {gcs_csv_uri}")
         unpacked_at = dt.datetime.now(dt.timezone.utc)
 
-        logger.info(f"CSV uploaded to {gcs_csv_uri}")
-
-        update_query = f"""
-        UPDATE `{log_table_fqn}`
-        SET
-          gcs_csv_uri = @gcs_csv_uri,
-          csv_size    = @csv_size,
-          unpacked_at = @unpacked_at
-        WHERE hash_id = @hash_id
+        merge_query = f"""
+        MERGE `{log_table_fqn}` T
+        USING (
+            SELECT
+                @hash_id     AS hash_id,
+                @gcs_csv_uri AS gcs_csv_uri,
+                @csv_size    AS csv_size,
+                @unpacked_at AS unpacked_at
+        ) S
+        ON T.hash_id = S.hash_id
+        WHEN MATCHED AND T.gcs_csv_uri IS NULL THEN
+            UPDATE SET
+                gcs_csv_uri = S.gcs_csv_uri,
+                csv_size    = S.csv_size,
+                unpacked_at = S.unpacked_at
         """
+
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
                 bigquery.ScalarQueryParameter("hash_id", "STRING", hash_id),
@@ -136,33 +117,22 @@ def extract_csv_from_zip(hash_id):
             ]
         )
 
-        job = bq_client.query(update_query, job_config=job_config)
+        job = bq_client.query(merge_query, job_config=job_config)
         job.result()
-        if job.num_dml_affected_rows == 0:
-            raise RuntimeError(f"UPDATE affected 0 rows for hash_id={hash_id}")
 
-        logger.info(f"Updating metadata_log, affected {job.num_dml_affected_rows} rows for hash_id={hash_id}")
+        rows_affected = job.num_dml_affected_rows or 0
+        if rows_affected == 0:
+            logger.info(f"MERGE updated 0 rows for hash_id={hash_id} (likely concurrent extraction already updated metadata)")
+        else:
+            logger.info(f"MERGE updated {rows_affected} rows in metadata for hash_id={hash_id}")
 
-        check_query = f"""
-        SELECT gcs_csv_uri
-        FROM `{log_table_fqn}`
-        WHERE hash_id = @hash_id
-        LIMIT 1
-        """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("hash_id", "STRING", hash_id),
-            ]
-        )
-        job = bq_client.query(check_query, job_config=job_config)
-        meta_row = next(job.result(), None)
+        if meta_row := get_meta_row_by_hash(bq_client, log_table_fqn, hash_id, ["gcs_csv_uri", "csv_size"]):
+            validate_meta_row(
+                meta_row, hash_id, ["gcs_csv_uri", "csv_size"], {"gcs_csv_uri": gcs_csv_uri, "csv_size": total_bytes}
+            )
 
-        if meta_row:
-            meta_uri = meta_row["gcs_csv_uri"]
-            if meta_uri == gcs_csv_uri:
-                logger.info("Extraction completed")
-                return {"hash_id": hash_id}
-            raise RuntimeError(f"Meta CSV URI mismatch for hash_id={hash_id}: meta={meta_uri}, expected={gcs_csv_uri}")
+            logger.info("Extraction completed")
+            return {"hash_id": hash_id}
         raise RuntimeError(f"Extraction completed but meta row missing for hash_id={hash_id}")
 
     finally:
@@ -183,6 +153,6 @@ def extract_csv_from_zip(hash_id):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    hash_id = "474130726dc57aa39a422640c8359dd92b8131f3b14828e727a3ff3b1030dced"
+    hash_id = "004fd4f892e51885594fcc47d411fad7b012bc34c1608ca0c38560934d268516"
     result = extract_csv_from_zip(hash_id)
     logger.info(f"Done. Returned value was: {result}")
