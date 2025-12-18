@@ -144,3 +144,59 @@ Steps:
   * Remove temp files.
 
 Output for downstream steps: `{hash_id}`.
+
+## Step 3 - Load CSV into BigQuery Raw
+
+### Goal
+
+Load the extracted CSV snapshot (identified by `hash_id`) from GCS into a **dedicated BigQuery raw snapshot table** (wide format), preserving the file **as-is** (minimal parsing).
+
+Each snapshot is materialized as its **own table**, whose name is deterministically derived from `hash_id`.
+
+---
+
+### Potential Problems
+
+* `gcs_csv_uri` missing in metadata, or CSV blob missing in GCS.
+* CSV file missing, empty, or structurally corrupted.
+* CSV schema drift.
+* Concurrent runs attempt to load the **same hash** into the same snapshot table.
+* BigQuery load job fails mid-run.
+* Snapshot tables accumulate if dataset TTL is misconfigured.
+
+---
+
+### Mitigations
+
+* Resolve `gcs_csv_uri` from `metadata_log` by `hash_id` and verify the blob exists.
+* Perform pre-load CSV structural validation.
+* Generate schema deterministically from the header (all STRING).
+* Use a deterministic **hash-based table name** (with a stable prefix).
+* Use `WRITE_TRUNCATE` so repeated loads of the same snapshot are safe.
+* Store snapshot tables in a dataset with **default table expiration = 1 day**
+
+---
+
+### Implementation Notes
+
+Implement as `load_raw_from_csv` (PythonOperator).
+
+Input: function receives explicit `hash_id`. The DAG passes it from XCom.
+
+Steps:
+
+* Compute target snapshot table name from `hash_id`.
+* If the raw snapshot table already exists and is populated, return early.
+* Resolve `gcs_csv_uri` from `metadata_log` by `hash_id`.
+* Verify CSV blob exists in GCS.
+* Validate CSV structure (readable, header present, delimiter correct, consistent column count).
+* Extract header and generate BigQuery schema (all columns `STRING`).
+* Load CSV into the snapshot table using a BigQuery load job:
+  * `WRITE_TRUNCATE`
+  * `skip_leading_rows = 1`
+  * `max_bad_records = 0`
+  * schema from header
+
+Output for downstream steps: `{hash_id}`.
+
+
