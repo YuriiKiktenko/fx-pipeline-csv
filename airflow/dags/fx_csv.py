@@ -3,14 +3,14 @@ from datetime import datetime, timedelta
 from airflow import DAG  # type: ignore
 from airflow.providers.standard.operators.python import PythonOperator  # type: ignore
 
-
 from fx_csv_lib.ingest_zip import ingest_zip_snapshot
+from fx_csv_lib.extract_csv import extract_csv_from_zip
+from fx_csv_lib.load_raw import load_raw_from_csv
 
 default_args = {
     "owner": "airflow",
     "retries": 3,
     "retry_delay": timedelta(minutes=5),
-    "email_on_failure": True,
 }
 
 with DAG(
@@ -22,9 +22,22 @@ with DAG(
     max_active_runs=1,
     tags=["fx", "csv"],
 ) as dag:
+    
     ingest_zip = PythonOperator(
         task_id="ingest_zip_snapshot",
         python_callable=ingest_zip_snapshot,
     )
 
-    ingest_zip
+    extract_csv = PythonOperator(
+        task_id="extract_csv_from_zip",
+        python_callable=extract_csv_from_zip,
+        op_kwargs={"hash_id": "{{ ti.xcom_pull(task_ids='ingest_zip_snapshot')['hash_id'] }}"},
+    )
+
+    load_raw = PythonOperator(
+        task_id="load_raw_from_csv",
+        python_callable=load_raw_from_csv,
+        op_kwargs={"hash_id": "{{ ti.xcom_pull(task_ids='extract_csv_from_zip')['hash_id'] }}"},
+    )
+
+    ingest_zip >> extract_csv >> load_raw
