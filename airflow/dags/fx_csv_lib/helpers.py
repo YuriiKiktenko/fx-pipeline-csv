@@ -1,11 +1,13 @@
 import requests
 import hashlib
 import zipfile
+import csv
 
 from google.cloud import bigquery
 from google.cloud.storage import Client as StorageClient
 from google.cloud.bigquery import Client as BigQueryClient
 from google.api_core.exceptions import PreconditionFailed
+from google.api_core.exceptions import NotFound
 
 CHUNK_SIZE = 8192
 ALLOWED_META_FIELDS = {
@@ -108,16 +110,18 @@ def validate_zip(local_path: str) -> str:
 def get_meta_row_by_hash(bq_client: BigQueryClient, table_fqn: str, hash_id: str, fields: list[str]) -> dict | None:
     """
     Fetch a metadata row by hash_id.
-    Returns a dict with requested fields or None.
+    Returns a dict with hash_id and requested fields or None.
     """
     if not fields:
         raise ValueError("fields must be a non-empty list")
 
-    bad_fields = set(fields) - ALLOWED_META_FIELDS
+    select_list = list(dict.fromkeys(["hash_id", *fields]))
+
+    bad_fields = set(select_list) - ALLOWED_META_FIELDS
     if bad_fields:
         raise ValueError(f"Unsupported fields requested: {sorted(bad_fields)}")
 
-    select_fields = ", ".join(fields)
+    select_fields = ", ".join(select_list)
 
     query = f"""
     SELECT {select_fields}
@@ -135,7 +139,7 @@ def get_meta_row_by_hash(bq_client: BigQueryClient, table_fqn: str, hash_id: str
     if row is None:
         return None
 
-    return {field: row[field] for field in fields}
+    return {field: row[field] for field in select_list}
 
 
 def validate_gcs_blob(storage_client: StorageClient, gcs_uri: str, expected_hash_id: str, expected_size: int) -> None:
@@ -169,6 +173,13 @@ def validate_meta_row(meta_row: dict | None, hash_id: str, required: list[str], 
     if meta_row is None:
         raise RuntimeError(f"Metadata missing for hash_id={hash_id}")
 
+    if "hash_id" not in meta_row:
+        raise RuntimeError("Missing 'hash_id' field in meta row")
+
+    got_hash = meta_row["hash_id"]
+    if got_hash != hash_id:
+        raise RuntimeError(f"Metadata integrity error: hash_id mismatch: got={got_hash!r}, expected={hash_id!r}")
+
     for key in required:
         if key not in meta_row:
             raise RuntimeError(f"Metadata integrity error: missing {key} for hash_id={hash_id}")
@@ -180,7 +191,9 @@ def validate_meta_row(meta_row: dict | None, hash_id: str, required: list[str], 
         for key, exp in expected.items():
             got = meta_row.get(key)
             if got != exp:
-                raise RuntimeError(f"Metadata integrity error: {key} mismatch for hash_id={hash_id}: got={got}, expected={exp}")
+                raise RuntimeError(
+                    f"Metadata integrity error: {key} mismatch for hash_id={hash_id}: got={got!r}, expected={exp!r}"
+                )
 
 
 def extract_csv(zip_path: str, csv_path: str) -> int:
@@ -218,3 +231,75 @@ def upload_file_to_blob(storage_client: StorageClient, gcs_uri: str, local_path:
         return "Uploaded new object to GCS"
     except PreconditionFailed:
         return "GCS object already exists"
+
+
+def table_exists_and_populated(bq_client: bigquery.Client, table_fqn: str) -> bool:
+    """
+    Returns True if table exists AND is populated (num_rows > 0).
+    """
+    try:
+        table = bq_client.get_table(table_fqn)
+    except NotFound:
+        return False
+
+    if table.num_rows is None:
+        return False
+
+    return table.num_rows > 0
+
+
+def validate_csv_structure(storage_client: StorageClient, gcs_csv_uri: str) -> tuple[list[str], str]:
+    """
+    Validates and returns list of columns names and delimiter in the csv.
+    """
+    bucket, blob_path = parse_gcs_uri(gcs_csv_uri)
+    blob = storage_client.bucket(bucket).blob(blob_path)
+
+    prefix_bytes = blob.download_as_bytes(start=0, end=64 * 1024)
+
+    text = prefix_bytes.decode("utf-8-sig", errors="strict")
+
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        raise ValueError("CSV must contain header and at least one data row")
+
+    for delimiter in [",", ";", "\t"]:
+        reader = csv.reader([lines[0], lines[1]], delimiter=delimiter, quotechar='"')
+        header = next(reader)
+        row = next(reader)
+
+        if len(header) >= 2 and len(header) == len(row):
+            header_cols = [c.strip() for c in header]
+            if header_cols[-1] == "":
+                if row[-1].strip() == "":
+                    header_cols[-1] = "_trailing_empty"
+                else:
+                    raise ValueError("Trailing empty column contains values")
+
+            if any(col == "" for col in header_cols):
+                raise ValueError("Empty column names in header")
+
+            if len(set(header_cols)) != len(header_cols):
+                raise ValueError("Duplicate column names in header")
+
+            if header_cols[0] != "Date":
+                raise ValueError(f"First column must be 'Date', got {header_cols[0]!r}")
+
+            for col in header_cols[1:]:
+                if col == "_trailing_empty":
+                    continue
+                if len(col) != 3 or not col.isalpha() or not col.isupper():
+                    raise ValueError(f"Invalid currency column name {col!r}; expected 3-letter code like 'USD'")
+
+            return header_cols, delimiter
+    raise ValueError("Unable to detect CSV delimiter")
+
+
+def create_schema(header_cols: list[str]) -> list[bigquery.SchemaField]:
+    """
+    Returns all strings schema.
+    """
+    if not header_cols:
+        raise ValueError("Cannot create schema from empty header")
+
+    return [bigquery.SchemaField(col, "STRING", mode="NULLABLE") for col in header_cols]

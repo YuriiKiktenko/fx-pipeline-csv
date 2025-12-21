@@ -17,6 +17,7 @@ BQ_META_DATASET = "fx_meta"
 BQ_META_LOG_TABLE = "fx_ingestion_log"
 
 BQ_RAW_DATASET = "fx_raw"
+BQ_RAW_TABLE_PREFIX = "fxsnap_"
 
 # Google Buckets (depends on project_id)
 GS_RAW_BUCKET = f"fx-raw-{GC_PROJECT_ID}"

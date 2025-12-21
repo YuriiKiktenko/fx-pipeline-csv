@@ -169,7 +169,7 @@ Each snapshot is materialized as its **own table**, whose name is deterministica
 ### Mitigations
 
 * Resolve `gcs_csv_uri` from `metadata_log` by `hash_id` and verify the blob exists.
-* Perform pre-load CSV structural validation.
+* Perform pre-load CSV structural validation. Handle an optional trailing empty column name by renaming it to _trailing_empty.
 * Generate schema deterministically from the header (all STRING).
 * Use a deterministic **hash-based table name** (with a stable prefix).
 * Use `WRITE_TRUNCATE` so repeated loads of the same snapshot are safe.
@@ -189,7 +189,7 @@ Steps:
 * If the raw snapshot table already exists and is populated, return early.
 * Resolve `gcs_csv_uri` from `metadata_log` by `hash_id`.
 * Verify CSV blob exists in GCS.
-* Validate CSV structure (readable, header present, delimiter correct, consistent column count).
+* Validate CSV structure and header domain rules (readable, header present, delimiter correct, first column Date, currency columns [A-Z]{3}, consistent column count, optional trailing empty column).
 * Extract header and generate BigQuery schema (all columns `STRING`).
 * Load CSV into the snapshot table using a BigQuery load job:
   * `WRITE_TRUNCATE`
