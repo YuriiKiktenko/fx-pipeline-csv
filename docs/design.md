@@ -28,8 +28,9 @@ Phase A is responsible for managing file-level snapshots and keeping **one up-to
 1. Ingest ZIP file (check + hash + download-if-changed + GCS upload)  
 2. Extract the CSV file from the ZIP and store it in GCS  (if new)
 3. Load the CSV into a BigQuery raw table (as text) (if new)
-4. Parse and clean the raw data in BigQuery and transform the wide data into a long format as the latest full-history table + save snapshot and full-history table metadata (if new)
-5. Check that the latest full-history table contains run_date (readiness check)
+4. Transform the raw snapshot wide table into a latest full-history long table (raw, no typing) and stamp it with snapshot_hash_id (if new)
+5. Parse, clean, and type the latest full-history long table into a stable analytics-ready structure (dbt + tests)
+6. Check that the latest full-history table contains run_date (readiness check)
 
 In the current version the pipeline always uses the **latest available snapshot** to build the full-history table consumed by Phase B. As a possible future extension, Phase A may accept a specific historical `snapshot_id` and rebuild the full-history table from it (e.g. for debugging, audit or time‑travel scenarios).
 
@@ -37,11 +38,11 @@ In the current version the pipeline always uses the **latest available snapshot*
 
 Phase B always reads from the **latest full-history table** produced by Phase A (it does not select or manage snapshots explicitly) and processes the required `run_date`.
 
-5. Filter by `run_date` and idempotently MERGE into the core table  
-6. Detect late data by comparing recent historical values with the existing core table and emit alerts  
-7. Build dbt models (staging and marts)  
-8. Expose marts to Looker Studio  
-9. Implement alerting, retries, and backfill logic 
+7. Filter by `run_date` and idempotently MERGE into the core table  
+8. Detect late data by comparing recent historical values with the existing core table and emit alerts  
+9. Build dbt models (staging and marts)  
+10. Expose marts to Looker Studio  
+11. Implement alerting, retries, and backfill logic 
 
 
 ---
@@ -199,4 +200,53 @@ Steps:
 
 Output for downstream steps: `{hash_id}`.
 
+## Step 4 - Build Full-History Long Table (Raw)
 
+### Goal
+
+Transform the BigQuery raw snapshot table (wide full-history, identified by `hash_id`) into a **latest full-history snapshot** in long format with hash_id column
+
+This step performs **no type casting and no semantic validation**. It only:
+* reshapes wide → long (UNPIVOT),
+* adds a `hash_id` column,
+* writes to a `fx_raw_long` table.
+
+---
+
+### Potential Problems
+
+* Raw snapshot table for the given `hash_id` does not exist.
+* Concurrent runs attempt to rebuild the latest long table at the same time.
+* UNPIVOT fails due to unexpected columns or schema drift.
+* The latest long table exists but corresponds to a different snapshot.
+
+---
+
+### Mitigations
+
+* Derive the raw snapshot table name deterministically from `hash_id`. Raise if snapshot table not found.
+* Perform an early exit only if the latest long table already contains the same `hash_id`.
+* Explicitly exclude non-currency columns from UNPIVOT (`Date`, `_trailing_empty`).
+* Use `CREATE OR REPLACE TABLE ... AS SELECT` for atomic replacement.
+
+---
+
+### Implementation Notes
+
+Implement as `build_long_raw` (PythonOperator).
+
+Input: the function receives an explicit `hash_id` (passed from XCom).
+
+Steps:
+
+* If table `fx_raw_long` exists and contains `hash_id` = <hash_id>, return early.
+* Compute raw snapshot table FQN `raw_snapshot_fqn` from `hash_id`.
+* Check that snapshot table <raw_snapshot_fqn> exists, raise if not.
+* CREATE OR REPLACE TABLE `fx_raw_long`:
+    * UNPIVOT currency columns
+    * Add constant column `hash_id`
+    * Exclude `_trailing_empty` from UNPIVOT
+    * Keep all as STRING
+* Validate resulting `fx_raw_long`.
+
+Output for downstream steps `{hash_id}`
