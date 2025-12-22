@@ -50,7 +50,7 @@ def load_raw_from_csv(hash_id):
 
     bq_client = bigquery.Client(project=cfg.GC_PROJECT_ID)
     log_table_fqn = f"{cfg.GC_PROJECT_ID}.{cfg.BQ_META_DATASET}.{cfg.BQ_META_LOG_TABLE}"
-    raw_table_fqn = f"{cfg.GC_PROJECT_ID}.{cfg.BQ_RAW_DATASET}.{cfg.BQ_RAW_TABLE_PREFIX}{hash_id}"
+    raw_table_fqn = f"{cfg.GC_PROJECT_ID}.{cfg.BQ_RAW_SNAPSHOT_DATASET}.{cfg.BQ_RAW_SNAPSHOT_TABLE_PREFIX}{hash_id}"
 
     storage_client = storage.Client(project=cfg.GC_PROJECT_ID)
 

@@ -16,8 +16,11 @@ FX_ZIP_URL = _require_env("FX_ZIP_URL")
 BQ_META_DATASET = "fx_meta"
 BQ_META_LOG_TABLE = "fx_ingestion_log"
 
+BQ_RAW_SNAPSHOT_DATASET = "fx_raw_snapshots"
+BQ_RAW_SNAPSHOT_TABLE_PREFIX = "fxsnap_"
+
 BQ_RAW_DATASET = "fx_raw"
-BQ_RAW_TABLE_PREFIX = "fxsnap_"
+BQ_RAW_LONG_TABLE = "fx_raw_long"
 
 # Google Buckets (depends on project_id)
 GS_RAW_BUCKET = f"fx-raw-{GC_PROJECT_ID}"
