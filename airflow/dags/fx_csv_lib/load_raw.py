@@ -6,7 +6,7 @@ import fx_csv_lib.config as cfg
 from fx_csv_lib.helpers import (
     create_schema,
     get_meta_row_by_hash,
-    table_exists_and_populated,
+    get_existing_table_row_count,
     validate_meta_row,
     validate_gcs_blob,
     validate_csv_structure,
@@ -54,11 +54,16 @@ def load_raw_from_csv(hash_id):
 
     storage_client = storage.Client(project=cfg.GC_PROJECT_ID)
 
-    if table_exists_and_populated(bq_client, raw_table_fqn):
-        logger.info(f"Raw snapshot table already exists and populated: {raw_table_fqn}")
+    rows = get_existing_table_row_count(bq_client, raw_table_fqn)
+    if rows is not None and rows > 0:
+        logger.info(f"Raw snapshot table {raw_table_fqn} already exists and has {rows} rows")
         return {"hash_id": hash_id}
+    
+    if rows == 0:
+        logger.warning(f"Raw snapshot table exists but is empty: {raw_table_fqn}. Will reload.")
+    else:
+        logger.info(f"No existing raw snapshot table, target raw snapshot table: {raw_table_fqn}")
 
-    logger.info(f"No existing raw snapshot table, target raw snapshot table: {raw_table_fqn}")
     meta_row = get_meta_row_by_hash(bq_client, log_table_fqn, hash_id, ["gcs_csv_uri", "csv_size"])
     validate_meta_row(meta_row, hash_id, ["gcs_csv_uri", "csv_size"])
     validate_gcs_blob(storage_client, meta_row["gcs_csv_uri"], hash_id, meta_row["csv_size"])
@@ -87,10 +92,11 @@ def load_raw_from_csv(hash_id):
     job = bq_client.load_table_from_uri(gcs_csv_uri, raw_table_fqn, job_config=job_config)
     job.result()
 
-    if not table_exists_and_populated(bq_client, raw_table_fqn):
+    rows_after = get_existing_table_row_count(bq_client, raw_table_fqn)
+    if rows_after is None or rows_after == 0:
         raise RuntimeError(f"Load completed but snapshot table not populated: {raw_table_fqn}")
-
-    logger.info(f"Snapshot table loaded successfully: {raw_table_fqn}")
+    
+    logger.info(f"Snapshot table loaded successfully: {raw_table_fqn}, rows={rows_after}")
     return {"hash_id": hash_id}
 
 
