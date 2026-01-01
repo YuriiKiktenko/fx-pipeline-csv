@@ -233,19 +233,15 @@ def upload_file_to_blob(storage_client: StorageClient, gcs_uri: str, local_path:
         return "GCS object already exists"
 
 
-def table_exists_and_populated(bq_client: bigquery.Client, table_fqn: str) -> bool:
+def get_existing_table_row_count(bq_client: bigquery.Client, table_fqn: str) -> int | None:
     """
-    Returns True if table exists AND is populated (num_rows > 0).
+    Returns row count if table exists or None.
     """
     try:
         table = bq_client.get_table(table_fqn)
     except NotFound:
-        return False
-
-    if table.num_rows is None:
-        return False
-
-    return table.num_rows > 0
+        return None
+    return table.num_rows
 
 
 def validate_csv_structure(storage_client: StorageClient, gcs_csv_uri: str) -> tuple[list[str], str]:
@@ -303,3 +299,41 @@ def create_schema(header_cols: list[str]) -> list[bigquery.SchemaField]:
         raise ValueError("Cannot create schema from empty header")
 
     return [bigquery.SchemaField(col, "STRING", mode="NULLABLE") for col in header_cols]
+
+
+def table_contains_matching_hash(bq_client: bigquery.Client, table_fqn: str, hash_id: str) -> bool:
+    """
+    Returns True if table contains at least one row with hash_id = given hash_id.
+    """
+    query = f"""
+    SELECT 1
+    FROM `{table_fqn}`
+    WHERE hash_id = @hash_id
+    LIMIT 1
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("hash_id", "STRING", hash_id)],
+    )
+
+    job = bq_client.query(query, job_config=job_config)
+    row = next(job.result(), None)
+
+    return row is not None
+
+
+def get_currency_columns_from_wide_snapshot(bq_client: bigquery.Client, raw_snapshot_fqn: str) -> list[str]:
+    """
+    Read snapshot wide table schema and return list of currency columns to UNPIVOT.
+    Excludes Date and _trailing_empty.
+    """
+    table = bq_client.get_table(raw_snapshot_fqn)
+    cols = [f.name for f in table.schema]
+
+    excluded = {"Date", "_trailing_empty"}
+    currency_cols = [c for c in cols if c not in excluded]
+
+    if not currency_cols:
+        raise RuntimeError(f"No currency columns found in snapshot table schema: {raw_snapshot_fqn}")
+
+    return currency_cols
