@@ -7,6 +7,7 @@ __pycache__/
 *.pyo
 
 *.env
+*.env.local
 *.json.key
 # *.parquet
 # *.csv
@@ -18,5 +19,6 @@ __pycache__/
 .test/
 
 docker-volume/
+dbt/
 
 !.gitkeep
