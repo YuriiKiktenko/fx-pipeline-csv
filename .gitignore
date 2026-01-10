@@ -6,8 +6,9 @@ __pycache__/
 *.pyc
 *.pyo
 
-*.env
-*.env.local
+.env*
+!.env*.example
+# *.env.local
 *.json.key
 # *.parquet
 # *.csv
@@ -20,5 +21,6 @@ __pycache__/
 
 docker-volume/
 dbt/
+secrets/*
 
 !.gitkeep

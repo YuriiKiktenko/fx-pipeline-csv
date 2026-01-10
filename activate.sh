@@ -42,7 +42,7 @@ export PYTHONPATH="$PROJECT_ROOT/airflow/dags${PYTHONPATH:+:$PYTHONPATH}"
 export DBT_PROFILES_DIR="$PROJECT_ROOT/dbt"
 
 # creds path
-export GOOGLE_APPLICATION_CREDENTIALS="$PROJECT_ROOT/airflow/config/service-account.json"
+export GOOGLE_APPLICATION_CREDENTIALS="$PROJECT_ROOT/secrets/service-account.json"
 [ -f "$GOOGLE_APPLICATION_CREDENTIALS" ] || {
   echo "❌ Credentials file not found: $GOOGLE_APPLICATION_CREDENTIALS"
   return 1
