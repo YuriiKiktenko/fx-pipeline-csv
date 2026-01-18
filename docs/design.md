@@ -29,7 +29,7 @@ Phase A is responsible for managing file-level snapshots and keeping **one up-to
 2. Extract the CSV file from the ZIP and store it in GCS  (if new)
 3. Load the CSV into a BigQuery raw table (as text) (if new)
 4. Transform the raw snapshot wide table into a latest full-history long table (raw, no typing) and stamp it with snapshot_hash_id (if new)
-5. Parse, clean, and type the latest full-history long table into a stable analytics-ready structure (dbt + tests)
+5. Parse, clean, and type the latest full-history long table 
 6. Check that the latest full-history table contains run_date (readiness check)
 
 In the current version the pipeline always uses the **latest available snapshot** to build the full-history table consumed by Phase B. As a possible future extension, Phase A may accept a specific historical `snapshot_id` and rebuild the full-history table from it (e.g. for debugging, audit or time‑travel scenarios).
@@ -250,3 +250,62 @@ Steps:
 * Validate resulting `fx_raw_long`.
 
 Output for downstream steps `{hash_id}`
+
+# Step 5 — Parse, Clean, and Type the Latest Full-History Long Table
+
+## Goal
+
+Prepare a typed, clean, deduplicated dataset for the requested `hash_id` from the `fx_raw_long` and publish it as a validated latest-only table `fx_stage_long`
+
+---
+
+## Potential Problems
+
+* Snapshot mismatch: `fx_raw_long` does not contain the requested `hash_id`.
+* `date_str` contains empty or malformed values.
+* `rate_str` contains empty values, non-numeric text, or markers such as `N/A`.
+* `currency` may include whitespace, lowercase, or unexpected values.
+* Duplicate rows for the same `(date, currency)`.
+
+---
+
+## Mitigations
+
+* Use explicit `hash_id` from XCom and validate `fx_raw_long` contains that hash.
+* Always filter the source: `WHERE hash_id = <hash_id>`
+* Explicitly treat `N/A` (and empty strings) as NULL before casting.
+* Filter out rows where typed fields are NULL after casting.
+* Normalize currency via `UPPER(TRIM(currency))`.
+* Deduplicate.
+* Validate result
+* Use candidate table + promote pattern so the final table is updated only if validations pass
+
+---
+
+## Implementation Notes
+
+Implement as `build_long_stage` (PythonOperator).
+
+Input: function receives explicit `hash_id`. The DAG passes it from XCom.
+
+Steps:
+* Verify `fx_raw_long` contains rows for the requested `hash_id`.
+* Parse:
+  * `rate_date = SAFE_CAST(date_str AS DATE)`
+  * `currency = UPPER(TRIM(currency))`
+  * `rate = SAFE_CAST(NULLIF(NULLIF(TRIM(rate_str), ''), 'N/A') AS NUMERIC)`
+* Filter:
+  * `rate_date IS NOT NULL`
+  * `currency IS NOT NULL AND currency != ''`
+  * `rate IS NOT NULL`
+* Deduplicate data (`SELECT DISTINCT rate_date, currency, rate, hash_id`)
+* Build candidate: CREATE OR REPLACE TABLE `fx_stage_long_candidate` AS <typed/filtered/distinct>
+* Validation checks (fail-fast):
+  * regex validation for `currency` (`^[A-Z]{3}$`)
+  * `rate > 0`
+  * uniqueness on `(rate_date, currency)`
+* Promote candidate: CREATE OR REPLACE TABLE `fx_stage_long` AS SELECT * FROM `fx_stage_long_candidate`
+* Cleanup: DROP TABLE IF EXISTS `fx_stage_long_candidate`
+
+Output for downstream steps `{hash_id}`
+
