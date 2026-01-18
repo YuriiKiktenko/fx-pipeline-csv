@@ -7,6 +7,7 @@ from fx_csv_lib.ingest_zip import ingest_zip_snapshot
 from fx_csv_lib.extract_csv import extract_csv_from_zip
 from fx_csv_lib.load_raw import load_raw_from_csv
 from fx_csv_lib.build_long import build_long_raw
+from fx_csv_lib.build_stage import build_long_stage
 
 default_args = {
     "owner": "airflow",
@@ -46,4 +47,10 @@ with DAG(
         op_kwargs={"hash_id": "{{ ti.xcom_pull(task_ids='load_raw_from_csv')['hash_id'] }}"},
     )
 
-    ingest_zip >> extract_csv >> load_raw >> build_long
+    build_stage = PythonOperator(
+        task_id="build_long_stage",
+        python_callable=build_long_stage,
+        op_kwargs={"hash_id": "{{ ti.xcom_pull(task_ids='build_long_raw')['hash_id'] }}"},
+    )
+
+    ingest_zip >> extract_csv >> load_raw >> build_long >> build_stage

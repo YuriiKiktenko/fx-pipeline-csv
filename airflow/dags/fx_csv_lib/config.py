@@ -22,6 +22,9 @@ BQ_RAW_SNAPSHOT_TABLE_PREFIX = "fxsnap_"
 BQ_RAW_DATASET = "fx_raw"
 BQ_RAW_LONG_TABLE = "fx_raw_long"
 
+BQ_STAGE_DATASET = "fx_stage"
+BQ_STAGE_LONG_TABLE = "fx_stage_long"
+
 # Google Buckets (depends on project_id)
 GS_RAW_BUCKET = f"fx-raw-{GC_PROJECT_ID}"
 
