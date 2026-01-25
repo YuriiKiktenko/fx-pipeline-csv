@@ -30,16 +30,16 @@ Phase A is responsible for managing file-level snapshots and keeping **one up-to
 3. Load the CSV into a BigQuery raw table (as text) (if new)
 4. Transform the raw snapshot wide table into a latest full-history long table (raw, no typing) and stamp it with snapshot_hash_id (if new)
 5. Parse, clean, and type the latest full-history long table 
-6. Check that the latest full-history table contains run_date (readiness check)
 
 In the current version the pipeline always uses the **latest available snapshot** to build the full-history table consumed by Phase B. As a possible future extension, Phase A may accept a specific historical `snapshot_id` and rebuild the full-history table from it (e.g. for debugging, audit or time‑travel scenarios).
 
 ### Phase B - Daily / Backfill Processing (Date-Level Operations)
 
-Phase B always reads from the **latest full-history table** produced by Phase A (it does not select or manage snapshots explicitly) and processes the required `run_date`.
+Phase B always reads from the **latest full-history table** produced by Phase A (it does not select or manage snapshots explicitly) and processes the required `rate_date`.
 
-7. Filter by `run_date` and idempotently MERGE into the core table  
-8. Detect late data by comparing recent historical values with the existing core table and emit alerts  
+6. Filter by `rate_date` and idempotently MERGE into the core table  
+7. Detect late data by comparing recent historical values with the existing core table and emit alerts  
+8. Check data for fullfilness and quality (post-merge monitoring)
 9. Build dbt models (staging and marts)  
 10. Expose marts to Looker Studio  
 11. Implement alerting, retries, and backfill logic 
@@ -309,3 +309,55 @@ Steps:
 
 Output for downstream steps `{hash_id}`
 
+# Step 6 — Merge Daily Rates into Core Table
+
+## Goal
+
+Idempotently replace FX rates for `rate_date` in the `fx_core_daily` fact table from the staging table `fx_stage_long` .
+
+---
+
+## Potential Problems
+
+* No rows exist in `fx_stage_long` for the requested `rate_date`.
+* Partial data for rate_date (necessary currencies missing).
+* Re-running the same `rate_date` causes duplicate inserts.
+* Late-arriving corrections for historical dates.
+
+---
+
+## Mitigations
+
+* If no rows exist for `rate_date`, skip insert.
+* Check for the necessary currencies with the list in config, fail if any of required currencies missing.
+* Always filter staging data by explicit `rate_date`.
+* Execute delete+insert in one BigQuery script job to avoid partial updates.
+* Support safe re-runs and backfills.
+
+---
+
+## Implementation Notes
+
+Implement as a single `merge_daily_rates` (PythonOperator).
+
+Input:
+
+* `hash_id` — snapshot identifier (from XCom)
+* `rate_date` — business date to process (str: 'YYYY-MM-DD')
+
+Steps:
+
+* Use explicit `hash_id` from XCom and validate `fx_stage_long` contains that hash.
+* Query `fx_stage_long` for rows matching `rate_date`.
+* If zero rows are found:
+  * Log informational message.
+  * Exit successfully.
+* If rows exist:
+  * Validate with the list in config if it contains all necessary currencies, raise error if not.
+  * Delete all existing rows in the `fx_core_daily` table for the `rate_date`
+  * Insert new rows (Execute delete+insert in one job).
+* Optionally log number of affected rows.
+
+---
+
+Output for downstream steps `{hash_id}`
