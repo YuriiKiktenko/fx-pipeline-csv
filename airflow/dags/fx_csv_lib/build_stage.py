@@ -61,10 +61,10 @@ def build_long_stage(hash_id):
 
         raw_rows = get_existing_table_row_count(bq_client, raw_long_fqn)
         if raw_rows is None or raw_rows == 0:
-            raise RuntimeError(f"{cfg.BQ_RAW_LONG_TABLE} table not found or empty: {raw_long_fqn}")
+            raise RuntimeError(f"Raw table not found or empty: {raw_long_fqn}")
         if not table_contains_matching_hash(bq_client, raw_long_fqn, hash_id):
             raise RuntimeError(f"{raw_long_fqn} table does not contain searched hash_id: {hash_id}")
-        logger.info(f"{cfg.BQ_RAW_LONG_TABLE} table found: {raw_long_fqn}, rows={raw_rows}")
+        logger.info(f"Raw table found: {raw_long_fqn}, rows={raw_rows}")
 
         build_candidate_sql = f"""
         CREATE OR REPLACE TABLE `{stage_long_candidate_fqn}` AS
@@ -153,8 +153,10 @@ def build_long_stage(hash_id):
         logger.info(f"Candidate validated successfully for hash_id={hash_id}: {stage_long_candidate_fqn}")
 
         promote_sql = f"""
-        CREATE OR REPLACE TABLE `{stage_long_fqn}` AS
-        SELECT * FROM `{stage_long_candidate_fqn}`
+        CREATE OR REPLACE TABLE `{stage_long_fqn}`
+        PARTITION BY DATE_TRUNC(rate_date, MONTH)
+        CLUSTER BY rate_date
+        AS SELECT * FROM `{stage_long_candidate_fqn}`
         WHERE hash_id = @hash_id
         """
         logger.info(f"Promoting candidate to final stage table: {stage_long_fqn}")
