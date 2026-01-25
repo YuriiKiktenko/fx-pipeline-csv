@@ -337,3 +337,75 @@ def get_currency_columns_from_wide_snapshot(bq_client: bigquery.Client, raw_snap
         raise RuntimeError(f"No currency columns found in snapshot table schema: {raw_snapshot_fqn}")
 
     return currency_cols
+
+
+def table_contains_matching_hash_and_date(
+    bq_client: bigquery.Client,
+    table_fqn: str,
+    hash_id: str,
+    rate_date: str,
+) -> bool:
+    """
+    Returns True if table contains at least one row with rate_date = given rate_date and hash_id = given hash_id.
+    """
+    query = f"""
+    SELECT 1
+    FROM `{table_fqn}`
+    WHERE hash_id = @hash_id
+    AND rate_date = @rate_date
+    LIMIT 1
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("hash_id", "STRING", hash_id),
+            bigquery.ScalarQueryParameter("rate_date", "DATE", rate_date),
+        ],
+    )
+
+    job = bq_client.query(query, job_config=job_config)
+    row = next(job.result(), None)
+
+    return row is not None
+
+
+def get_missing_required_currencies(
+    bq_client: bigquery.Client,
+    table_fqn: str,
+    hash_id: str,
+    rate_date: str,
+    required: list[str],
+) -> list[str]:
+    """
+    Returns a list of missing required currencies for (hash_id, rate_date).
+    """
+    if not required:
+        return []
+
+    query = f"""
+    WITH required AS (
+      SELECT currency
+      FROM UNNEST(@required_currencies) AS currency
+    ),
+    present AS (
+      SELECT DISTINCT currency
+      FROM `{table_fqn}`
+      WHERE hash_id = @hash_id
+        AND rate_date = @rate_date
+    )
+    SELECT r.currency AS missing_currency
+    FROM required r
+    LEFT JOIN present p
+      ON p.currency = r.currency
+    WHERE p.currency IS NULL
+    ORDER BY missing_currency
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("hash_id", "STRING", hash_id),
+            bigquery.ScalarQueryParameter("rate_date", "DATE", rate_date),
+            bigquery.ArrayQueryParameter("required_currencies", "STRING", list(required)),
+        ],
+    )
+    rows = bq_client.query(query, job_config=job_config).result()
+    return [row["missing_currency"] for row in rows]

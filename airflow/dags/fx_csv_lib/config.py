@@ -25,11 +25,20 @@ BQ_RAW_LONG_TABLE = "fx_raw_long"
 BQ_STAGE_DATASET = "fx_stage"
 BQ_STAGE_LONG_TABLE = "fx_stage_long"
 
+BQ_CORE_DATASET = "fx_core"
+BQ_CORE_DAILY_TABLE = "fx_core_daily"
+
 # Google Buckets (depends on project_id)
 GS_RAW_BUCKET = f"fx-raw-{GC_PROJECT_ID}"
 
 # settings
 MAX_ZIP_SIZE = 10 * 1024 * 1024  # 10 MB
+
+REQUIRED_CURRENCIES = [
+    "USD",
+    "AUD",
+    "CAD",
+]
 
 if __name__ == "__main__":
     print("Running config directly")
