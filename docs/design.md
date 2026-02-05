@@ -361,3 +361,76 @@ Steps:
 ---
 
 Output for downstream steps `{hash_id}`
+
+# Step 7 — Detect Late / Corrected Data (Scheduled Reconciliation Diff)
+
+## Goal
+
+Detect **late-arriving fixes** (corrections) by comparing a **recent lookback window** of staged full-history data (`fx_stage_long`) against what is already stored in the core daily fact table (`fx_core_daily`).
+
+---
+
+## Potential Problems
+
+* During backfills or manual runs, the step would run repeatedly and generate redundant diffs.
+* The pipeline may not yet be in a “steady-state” (e.g., historical backfill not finished), producing noisy diffs.
+* Staging does not correspond to the requested `hash_id`.
+* Scanning too much history.
+* False positives due to rounding/precision.
+* Partition filter constraints on `fx_core_daily` (`require_partition_filter = TRUE`).
+
+---
+
+## Mitigations
+
+* Feature-flag the step and run it only when the pipeline is stable: `LATE_DATA_DIFF_ENABLED` = True|False. If disabled → skip (no-op).
+* Execute this step **only for scheduled runs**. For other run types (manual/backfill) skip (no-op).
+* Use explicit `hash_id` from XCom and validate staging contains this hash.
+* Compare only a configurable **lookback window** ending at `check_date`.
+* Add tolerance to avoid noise `ABS(stage_rate - core_rate) > cfg.LATE_DATA_RATE_EPS`.
+* Classify differences deterministically:
+  * **late_insert**: stage row exists but core row missing.
+  * **late_update**: both exist but `rate` differs beyond epsilon.
+  * **core_extra**: core row exists but stage row missing.
+* Use partition filters when reading core.
+* Persist diffs for a given `check_date` using **replace-day** logic in `fx_meta`: `DELETE WHERE check_date=@check_date; INSERT …` (single script job)
+
+---
+
+## Implementation Notes
+
+Implement as `detect_late_data` (PythonOperator).
+
+Input:
+
+* `hash_id` — snapshot identifier (from XCom)
+* `check_date` — scheduled business date (str: `YYYY-MM-DD`, typically `data_interval_start.date()`)
+* `run_type` — derived from `dag_run.run_type` (manual/scheduled/backfill)
+
+Config:
+* `LATE_DATA_DIFF_ENABLED` (bool, default False)
+* `LATE_DATA_LOOKBACK_DAYS` (int, e.g. 14)
+* `LATE_DATA_RATE_EPS` (default 0)
+
+Steps:
+* If `LATE_DATA_DIFF_ENABLED` is False: log and return early (no-op).
+* Check run type, if `run_type != 'scheduled'`: log and return early (no-op).
+* Ensure `fx_stage_long` exists and contains the requested `hash_id`.
+* Define lookback window:
+   * `lookback_date = check_date - LATE_DATA_LOOKBACK_DAYS`.
+   * End date is `check_date`.
+* Build diff rows and persist (single script job: DELETE+INSERT):
+   * Compare stage vs core on key `(rate_date, currency)` within `[lookback_date, check_date]`.
+   * Classification:
+     * `late_insert`: stage_rate IS NOT NULL AND core_rate IS NULL
+     * `late_update`: stage_rate IS NOT NULL AND core_rate IS NOT NULL AND ABS(stage_rate - core_rate) > eps
+     * `core_extra`: stage_rate IS NULL AND core_rate IS NOT NULL
+   * Run one BigQuery script job:
+     * DELETE FROM `fx_meta.fx_late_data_diff` WHERE check_date = @check_date;
+     * INSERT INTO `fx_meta.fx_late_data_diff` <diff_rows>;
+* Summarize & alert:
+   * Query counts by `diff_type` for `check_date`.
+   * If counts > 0: log a structured summary.
+   * If counts == 0: log "no late data detected".
+
+Output for downstream steps: `{hash_id}`
