@@ -15,6 +15,7 @@ FX_ZIP_URL = _require_env("FX_ZIP_URL")
 # BQ fixed structure
 BQ_META_DATASET = "fx_meta"
 BQ_META_LOG_TABLE = "fx_ingestion_log"
+BQ_META_LATE_DATA_TABLE = "fx_late_data_diff"
 
 BQ_RAW_SNAPSHOT_DATASET = "fx_raw_snapshots"
 BQ_RAW_SNAPSHOT_TABLE_PREFIX = "fxsnap_"
@@ -39,6 +40,10 @@ REQUIRED_CURRENCIES = [
     "AUD",
     "CAD",
 ]
+
+LATE_DATA_DIFF_ENABLED = True
+LATE_DATA_LOOKBACK_DAYS = 14
+LATE_DATA_RATE_EPS = 0
 
 if __name__ == "__main__":
     print("Running config directly")
