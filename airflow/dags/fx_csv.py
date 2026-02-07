@@ -22,13 +22,13 @@ def merge_daily_rates_wrapper(hash_id, dag_run, data_interval_start=None, data_i
         if not rate_date:
             raise AirflowFailException('Manual run requires conf {"rate_date": "YYYY-MM-DD"}')
         rate_date = date.fromisoformat(str(rate_date)).isoformat()
-        return merge_daily_rates(hash_id=hash_id, rate_date=rate_date)
+        return merge_daily_rates(hash_id=hash_id, rate_date=rate_date, run_type=run_type)
 
     if run_type in {"scheduled", "backfill"}:
         if not data_interval_start or not data_interval_end:
             raise AirflowFailException("data_interval_start/end are required")
         rate_date = data_interval_start.date().isoformat()
-        return merge_daily_rates(hash_id=hash_id, rate_date=rate_date)
+        return merge_daily_rates(hash_id=hash_id, rate_date=rate_date, run_type=run_type)
 
     raise AirflowFailException(f"Unsupported run_type={dag_run.run_type!r}")
 

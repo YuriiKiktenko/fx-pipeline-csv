@@ -15,6 +15,7 @@ FX_ZIP_URL = _require_env("FX_ZIP_URL")
 # BQ fixed structure
 BQ_META_DATASET = "fx_meta"
 BQ_META_LOG_TABLE = "fx_ingestion_log"
+BQ_META_CORE_TABLE = "fx_core_meta"
 BQ_META_LATE_DATA_TABLE = "fx_late_data_diff"
 
 BQ_RAW_SNAPSHOT_DATASET = "fx_raw_snapshots"

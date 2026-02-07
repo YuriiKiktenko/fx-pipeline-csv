@@ -13,9 +13,9 @@ from fx_csv_lib.helpers import (
 logger = logging.getLogger(__name__)
 
 
-def merge_daily_rates(hash_id, rate_date):
+def merge_daily_rates(hash_id, rate_date, run_type):
     """
-    Load one business day of FX rates into the core fact table (idempotent).
+    Load one business day of FX rates into the core fact table and meta table (idempotent).
 
     Workflow:
         1) Validate the staging table exists and contains the requested `hash_id`.
@@ -25,7 +25,9 @@ def merge_daily_rates(hash_id, rate_date):
            If any required currency is missing, fail-fast.
         4) Execute a single BigQuery script job that:
             - deletes existing core rows for `rate_date`
-            - inserts the staging rows for (hash_id, rate_date)
+            - inserts into the core table the staging rows for (hash_id, rate_date)
+            - deletes existing meta rows for `rate_date`
+            - inserts into the meta table the info rows for rate_date
 
     Guarantees:
         - Core table contains exactly the rates loaded for `rate_date` from the given
@@ -38,6 +40,7 @@ def merge_daily_rates(hash_id, rate_date):
     bq_client = bigquery.Client(project=cfg.GC_PROJECT_ID)
     stage_long_fqn = f"{cfg.GC_PROJECT_ID}.{cfg.BQ_STAGE_DATASET}.{cfg.BQ_STAGE_LONG_TABLE}"
     core_fqn = f"{cfg.GC_PROJECT_ID}.{cfg.BQ_CORE_DATASET}.{cfg.BQ_CORE_DAILY_TABLE}"
+    core_meta_fqn = f"{cfg.GC_PROJECT_ID}.{cfg.BQ_META_DATASET}.{cfg.BQ_META_CORE_TABLE}"
 
     stage_rows = get_existing_table_row_count(bq_client, stage_long_fqn)
     if stage_rows is None or stage_rows == 0:
@@ -78,6 +81,23 @@ def merge_daily_rates(hash_id, rate_date):
     FROM `{stage_long_fqn}`
     WHERE hash_id = @hash_id
       AND rate_date = @rate_date;
+    
+    DELETE FROM `{core_meta_fqn}`
+    WHERE rate_date = @rate_date;
+
+    INSERT INTO `{core_meta_fqn}` (rate_date, run_type, hash_id, row_count, currency_count, rates, required_curr, inserted_at)
+    SELECT
+      @rate_date as rate_date,
+      @run_type as run_type,
+      @hash_id as hash_id,
+      COUNT(*) as row_count,
+      COUNT(DISTINCT currency) as currency_count,
+      ARRAY_AGG(STRUCT(currency, rate) ORDER BY currency) as rates,
+      @required as required_curr,
+      CURRENT_TIMESTAMP() as inserted_at
+    FROM `{stage_long_fqn}`
+    WHERE hash_id = @hash_id
+      AND rate_date = @rate_date;
 
     COMMIT TRANSACTION;
     """
@@ -86,6 +106,8 @@ def merge_daily_rates(hash_id, rate_date):
         query_parameters=[
             bigquery.ScalarQueryParameter("hash_id", "STRING", hash_id),
             bigquery.ScalarQueryParameter("rate_date", "DATE", rate_date),
+            bigquery.ScalarQueryParameter("run_type", "STRING", run_type),
+            bigquery.ArrayQueryParameter("required", "STRING", cfg.REQUIRED_CURRENCIES),
         ],
     )
 
@@ -99,7 +121,8 @@ def merge_daily_rates(hash_id, rate_date):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    test_hash = "e61a41c2ebf58b029b6ab2a86e62f35b3b14b45599c85a98ee9ded14acdd5ba1"
-    test_rate_date = "2026-01-16"
-    result = merge_daily_rates(test_hash, test_rate_date)
+    test_hash = "6cd1b238e88aca464c326267c23dcb5f50961a502e0d80e84d9a2d93f8a48bc5"
+    test_rate_date = "2026-02-04"
+    test_run_type = "test"
+    result = merge_daily_rates(test_hash, test_rate_date, test_run_type)
     logger.info(f"Done. Returned value was: {result}")
