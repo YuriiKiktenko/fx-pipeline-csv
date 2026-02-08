@@ -434,3 +434,52 @@ Steps:
    * If counts == 0: log "no late data detected".
 
 Output for downstream steps: `{hash_id}`
+
+# Step 8 — Check Data Availability & Quality (Post-Merge Monitoring)
+
+## Goal
+
+Continuously monitor that the **core daily fact table** contains the expected data after the daily load, and detect anomalies in **availability, completeness, volume, and rate movements**.
+
+---
+
+## Potential Problems
+
+* Provider holidays not fully known.
+* First few days without a baseline.
+* Legitimate FX volatility causing false positives.
+
+---
+
+## Mitigations
+
+* Skip monitoring on non-expected data days (weekends / configured holidays).
+* Skip baseline-based checks if no baseline exists.
+* All thresholds are configurable.
+* Required currency list is stored in meta for auditability.
+
+---
+
+## Implementation Notes
+
+Implement as `check_data_quality` (PythonOperator).
+
+Inputs:
+
+* `hash_id` — snapshot identifier (from XCom)
+* `rate_date` — business date to validate (`YYYY-MM-DD`)
+
+Steps:
+
+1. Check if `rate_date` is an expected data day.
+2. Load meta row for `rate_date`.
+3. Validate `hash_id` consistency.
+4. Determine baseline date (MAX(rate_date) < current).
+5. If baseline exists:
+   * Compare row_count and currency_count.
+   * Validate presence of all required currencies.
+   * Validate rate jumps for required currencies.
+6. Emit FAIL on any hard violation.
+7. Log success otherwise.
+
+Output for downstream steps `{hash_id}`
