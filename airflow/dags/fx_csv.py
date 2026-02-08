@@ -12,6 +12,7 @@ from fx_csv_lib.build_long import build_long_raw
 from fx_csv_lib.build_stage import build_long_stage
 from fx_csv_lib.update_core import merge_daily_rates
 from fx_csv_lib.detect_late import detect_late_data
+from fx_csv_lib.data_check import check_data_quality
 
 
 def merge_daily_rates_wrapper(hash_id, dag_run, data_interval_start=None, data_interval_end=None):
@@ -45,6 +46,25 @@ def detect_late_data_wrapper(hash_id, dag_run, data_interval_start=None, data_in
             data_interval_start.date().isoformat() if data_interval_start else (date.today() - timedelta(days=1)).isoformat()
         )
     return detect_late_data(hash_id=hash_id, check_date=check_date, run_type=run_type)
+
+
+def check_data_quality_wrapper(hash_id, dag_run, data_interval_start=None, data_interval_end=None):
+    run_type = getattr(dag_run.run_type, "value", dag_run.run_type).lower()
+
+    if run_type == "manual":
+        rate_date = (dag_run.conf or {}).get("rate_date")
+        if not rate_date:
+            raise AirflowFailException('Manual run requires conf {"rate_date": "YYYY-MM-DD"}')
+        rate_date = date.fromisoformat(str(rate_date)).isoformat()
+        return check_data_quality(hash_id=hash_id, rate_date=rate_date)
+
+    if run_type in {"scheduled", "backfill"}:
+        if not data_interval_start or not data_interval_end:
+            raise AirflowFailException("data_interval_start/end are required")
+        rate_date = data_interval_start.date().isoformat()
+        return check_data_quality(hash_id=hash_id, rate_date=rate_date)
+
+    raise AirflowFailException(f"Unsupported run_type={dag_run.run_type!r}")
 
 
 default_args = {
@@ -106,4 +126,11 @@ with DAG(
         op_kwargs={"hash_id": "{{ ti.xcom_pull(task_ids='merge_daily_rates')['hash_id'] }}"},
     )
 
-    ingest_zip >> extract_csv >> load_raw >> build_long >> build_stage >> update_core >> detect_late
+    data_check = PythonOperator(
+        task_id="check_data_quality",
+        python_callable=check_data_quality_wrapper,
+        op_kwargs={"hash_id": "{{ ti.xcom_pull(task_ids='detect_late_data')['hash_id'] }}"},
+    )
+
+
+    ingest_zip >> extract_csv >> load_raw >> build_long >> build_stage >> update_core >> detect_late >> data_check

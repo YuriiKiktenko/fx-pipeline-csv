@@ -3,6 +3,8 @@ import hashlib
 import zipfile
 import csv
 
+from datetime import date
+
 from google.cloud import bigquery
 from google.cloud.storage import Client as StorageClient
 from google.cloud.bigquery import Client as BigQueryClient
@@ -409,3 +411,67 @@ def get_missing_required_currencies(
     )
     rows = bq_client.query(query, job_config=job_config).result()
     return [row["missing_currency"] for row in rows]
+
+
+def is_expected_data_day(rate_date: date, holidays: list[str]) -> bool:
+    """
+    Return True if rate_date is an expected FX data day:
+    - not weekend (Mon-Fri)
+    - not a holiday (isoformat 'YYYY-MM-DD' in holidays)
+    """
+    if rate_date.weekday() >= 5:
+        return False
+
+    if not holidays:
+        return True
+
+    if rate_date.isoformat() in holidays:
+        return False
+
+    return True
+
+
+def fetch_core_meta_row(bq_client: bigquery.Client, meta_fqn: str, rate_date: date) -> bigquery.table.Row | None:
+    """
+    Fetch a single core meta row for the given rate_date from meta_fqn.
+    Returns a BigQuery Row or None if missing.
+    """
+    query = f"""
+    SELECT
+      rate_date,
+      run_type,
+      hash_id,
+      row_count,
+      currency_count,
+      rates,
+      required_curr
+    FROM `{meta_fqn}`
+    WHERE rate_date = @rate_date
+    LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("rate_date", "DATE", rate_date)])
+    return next(bq_client.query(query, job_config=job_config).result(), None)
+
+
+def fetch_baseline_date(bq_client: bigquery.Client, meta_fqn: str, rate_date: date) -> date | None:
+    """
+    Return the latest available baseline_date strictly before rate_date, or None if not found.
+    """
+    query = f"""
+    SELECT MAX(rate_date) AS baseline_date
+    FROM `{meta_fqn}`
+    WHERE rate_date < @rate_date
+    """
+    job_config = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("rate_date", "DATE", rate_date)])
+    row = next(bq_client.query(query, job_config=job_config).result(), None)
+    return None if row is None else row["baseline_date"]
+
+
+def convert_to_dict(rates_arr: list[bigquery.Row]) -> dict:
+    """
+    Convert BigQuery repeated RECORD field `rates` (list[Row]) into {currency: rate}.
+    Raises if rates array is empty.
+    """
+    if not rates_arr:
+        raise RuntimeError("No rates found in meta table row")
+    return {x["currency"]: x["rate"] for x in rates_arr}
