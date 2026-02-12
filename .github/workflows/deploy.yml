@@ -15,6 +15,4 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
-            set -euo pipefail
-            echo "===== DEPLOY $(date -Is) =====" | tee -a /home/gorm/fx-pipeline-csv/deploy.log
-            /usr/local/bin/fx-deploy --no-init |& tee -a /home/gorm/fx-pipeline-csv/deploy.log
+            /usr/local/bin/fx-deploy --no-init
