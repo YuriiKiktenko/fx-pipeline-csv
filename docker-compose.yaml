@@ -127,7 +127,7 @@ services:
     <<: *airflow-common
     command: api-server
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
       interval: 30s
@@ -217,6 +217,10 @@ services:
     command:
       - -c
       - |
+        if [[ "${SKIP_AIRFLOW_INIT:-0}" == "1" ]]; then
+          echo "SKIP_AIRFLOW_INIT=1 -> skipping airflow-init"
+          exit 0
+        fi
         if [[ -z "${AIRFLOW_UID}" ]]; then
           echo
           echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
