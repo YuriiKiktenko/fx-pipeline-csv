@@ -1,0 +1,14 @@
+fx_dbt:
+  outputs:
+    dev:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('GC_PROJECT_ID') }}"
+      dataset: fx_dbt
+      location: europe-west1
+      priority: interactive
+      threads: 2
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"
+      job_execution_timeout_seconds: 300
+      job_retries: 1
+  target: dev

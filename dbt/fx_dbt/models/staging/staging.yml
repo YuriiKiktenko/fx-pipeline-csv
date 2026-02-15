@@ -1,0 +1,31 @@
+version: 2
+
+models:
+  - name: stg_fx_rates
+    description: "Cleaned, typed staging table of core FX rates. Adds rate_month, base_currency; filters to recent data (>= 2026-01-01)."
+    columns:
+      - name: rate_date
+        description: "Business date of the rate."
+        tests: [not_null]
+      - name: rate_month
+        description: "First day of the month for rate_date."
+      - name: base_currency
+        description: "Base currency for all rates (from var fx_base_currency, typically EUR)."
+      - name: currency
+        description: "Three-letter ISO currency code."
+        tests: [not_null]
+      - name: rate
+        description: "Units of currency per 1 unit of base_currency."
+        tests: [not_null]
+
+  - name: stg_fx_rates_wide
+    description: "Wide staging: one row per rate_date, one column per required currency. Pivoted from stg_fx_rates."
+    columns:
+      - name: rate_date
+        tests: [not_null]
+      - name: rate_usd
+      - name: rate_gbp
+      - name: rate_jpy
+      - name: rate_chf
+      - name: rate_cad
+      - name: rate_aud

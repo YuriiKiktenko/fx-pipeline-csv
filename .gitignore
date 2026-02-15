@@ -21,6 +21,8 @@ __pycache__/
 
 docker-volume/
 # dbt/
+dbt/.user.yml
+
 secrets/*
 
 !.gitkeep

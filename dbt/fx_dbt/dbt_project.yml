@@ -1,0 +1,27 @@
+
+name: 'fx_dbt'
+version: '1.0.0'
+
+profile: 'fx_dbt'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  fx_dbt:
+    +materialized: table
+
+vars:
+  fx_required_currencies: ["USD","GBP","JPY","CHF","CAD","AUD"]
+  fx_base_currency: "EUR"
+
+flags:
+  send_anonymous_usage_stats: false

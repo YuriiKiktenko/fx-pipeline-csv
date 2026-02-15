@@ -1,0 +1,22 @@
+version: 2
+
+# Raw FX rates loaded by the Airflow pipeline.
+# One row per (rate_date, currency); rates are EUR-based (base currency = EUR).
+sources:
+  - name: fx_core
+    description: "BigQuery dataset containing the core FX daily fact table, populated by the Airflow DAG."
+    schema: fx_core
+    tables:
+      - name: fx_core_daily
+        description: "Daily FX rates: one row per (rate_date, currency). Rate = units of currency per 1 EUR."
+        columns:
+          - name: rate_date
+            description: "Business date for which the rate is published."
+          - name: currency
+            description: "Three-letter currency code (e.g. USD, GBP, JPY)."
+          - name: rate
+            description: "Exchange rate: units of this currency per 1 EUR."
+          - name: hash_id
+            description: "SHA-256 of the source ZIP snapshot used for this load."
+          - name: loaded_at
+            description: "Timestamp when the rate was loaded."
