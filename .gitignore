@@ -20,7 +20,7 @@ __pycache__/
 .test/
 
 docker-volume/
-dbt/
+# dbt/
 secrets/*
 
 !.gitkeep
