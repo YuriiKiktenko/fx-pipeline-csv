@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 
 from airflow import DAG  # type: ignore
 from airflow.providers.standard.operators.python import PythonOperator  # type: ignore
+from airflow.providers.standard.operators.bash import BashOperator  # type: ignore
 from airflow.timetables.interval import CronDataIntervalTimetable  # type: ignore
 from airflow.exceptions import AirflowFailException  # type: ignore
 
@@ -132,5 +133,10 @@ with DAG(
         op_kwargs={"hash_id": "{{ ti.xcom_pull(task_ids='detect_late_data')['hash_id'] }}"},
     )
 
+    dbt_build = BashOperator(
+        task_id="dbt_build_all",
+        bash_command="dbt build --fail-fast --project-dir /opt/airflow/dbt/fx_dbt",
+    )
 
-    ingest_zip >> extract_csv >> load_raw >> build_long >> build_stage >> update_core >> detect_late >> data_check
+
+    ingest_zip >> extract_csv >> load_raw >> build_long >> build_stage >> update_core >> detect_late >> data_check >> dbt_build
