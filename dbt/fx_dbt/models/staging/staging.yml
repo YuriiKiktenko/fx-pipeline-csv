@@ -23,9 +23,17 @@ models:
     columns:
       - name: rate_date
         tests: [not_null]
+      - name: rate_eur
+        tests: [not_null]
       - name: rate_usd
+        tests: [not_null]
       - name: rate_gbp
+        tests: [not_null]
       - name: rate_jpy
+        tests: [not_null]
       - name: rate_chf
+        tests: [not_null]
       - name: rate_cad
+        tests: [not_null]
       - name: rate_aud
+        tests: [not_null]
