@@ -23,6 +23,7 @@ vars:
   fx_required_currencies: ["EUR","USD","GBP","JPY","CHF","CAD","AUD"]
   fx_base_currency: "EUR"
   fx_start_date: "2026-01-01"
+  fx_large_change_threshold: 0.01
 
 flags:
   send_anonymous_usage_stats: false
