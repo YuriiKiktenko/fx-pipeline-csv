@@ -63,14 +63,14 @@ models:
         description: "Units of currency per 1 unit of base currency."
         tests: [not_null]
       - name: prev_rate
-        description: "Previous day's rate for the same currency (NULL for first day)."
+        description: "Previous day's rate for the same currency."
       - name: pct_change
-        description: "Day-over-day percent change: (rate / prev_rate) - 1. NULL for first day."
+        description: "Day-over-day percent change: (rate / prev_rate) - 1."
         tests:
           - dbt_utils.accepted_range:
               arguments:
-                min_value: -1
-                max_value: 10
+                min_value: -2
+                max_value: 2
                 inclusive: false
 
   - name: mart_fx_quality_daily

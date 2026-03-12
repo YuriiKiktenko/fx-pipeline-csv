@@ -2,7 +2,13 @@ version: 2
 
 models:
   - name: stg_fx_rates
-    description: "Cleaned, typed staging table of core FX rates. Adds rate_month, base_currency; filters to recent data (>= 2026-01-01)."
+    description: "Cleaned, typed staging table of core FX rates."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: 
+              - rate_date
+              - currency
     columns:
       - name: rate_date
         description: "Business date of the rate."
@@ -16,10 +22,21 @@ models:
         tests: [not_null]
       - name: rate
         description: "Units of currency per 1 unit of base_currency."
-        tests: [not_null]
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
 
   - name: stg_fx_rates_wide
     description: "Wide staging: one row per rate_date, one column per required currency. Pivoted from stg_fx_rates."
+    tests:
+      - unique:
+          column_name: rate_date
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "rate_eur > 0 AND rate_usd > 0 AND rate_gbp > 0"
     columns:
       - name: rate_date
         tests: [not_null]
