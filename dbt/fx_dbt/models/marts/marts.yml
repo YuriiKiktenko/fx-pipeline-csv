@@ -1,0 +1,150 @@
+version: 2
+
+models:
+  - name: mart_fx_daily
+    description: |
+      Wide daily table with multiple base currencies (EUR, USD, GBP): one row per day per base currency.
+      Rates converted from EUR-based rates (stg_fx_rates_wide).
+      Optimized for time series analysis in BI tools like Looker Studio.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - rate_date
+              - base_currency
+    columns:
+      - name: rate_date
+        description: "Business date of the FX rate."
+        tests: [not_null]
+      - name: base_currency
+        description: "Base currency (EUR, USD, or GBP)."
+        tests: [not_null]
+      - name: rate_eur
+        description: "FX rate for EUR per 1 unit of base_currency."
+        tests: [not_null]
+      - name: rate_usd
+        description: "FX rate for USD per 1 unit of base_currency."
+        tests: [not_null]
+      - name: rate_gbp
+        description: "FX rate for GBP per 1 unit of base_currency."
+        tests: [not_null]
+      - name: rate_jpy
+        description: "FX rate for JPY per 1 unit of base_currency."
+        tests: [not_null]
+      - name: rate_chf
+        description: "FX rate for CHF per 1 unit of base_currency."
+        tests: [not_null]
+      - name: rate_cad
+        description: "FX rate for CAD per 1 unit of base_currency."
+        tests: [not_null]
+      - name: rate_aud
+        description: "FX rate for AUD per 1 unit of base_currency."
+        tests: [not_null]
+
+  - name: mart_fx_pct_change
+    description: |
+      Daily percent change per currency (vs previous day).
+      Used for calculating 7d/30d/90d change metrics in BI tools.
+      First day for each currency is excluded (no pct_change row).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - rate_date
+              - currency
+    columns:
+      - name: rate_date
+        description: "Business date of the FX rate."
+        tests: [not_null]
+      - name: currency
+        description: "Three-letter ISO currency code."
+        tests: [not_null]
+      - name: rate
+        description: "Units of currency per 1 unit of base currency."
+        tests: [not_null]
+      - name: prev_rate
+        description: "Previous day's rate for the same currency (NULL for first day)."
+      - name: pct_change
+        description: "Day-over-day percent change: (rate / prev_rate) - 1. NULL for first day."
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: -1
+                max_value: 10
+                inclusive: false
+
+  - name: mart_fx_quality_daily
+    description: |
+      Daily quality metrics: row count, currency count, missing required currencies, and missing working days.
+      Checks that all working days (Mon-Fri) from fx_start_date have rates.
+      Includes percent change statistics and alert flags for data quality issues.
+      Used for data quality monitoring and alerting.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - rate_date
+    columns:
+      - name: rate_date
+        description: "Business date being monitored (all days from fx_start_date)."
+        tests: [not_null]
+      - name: data_expected
+        description: "True if this is a working day (Mon-Fri), false for weekends."
+        tests: [not_null]
+      - name: row_count
+        description: "Total number of rate records for this date (0 if working day is missing)."
+        tests: [not_null]
+      - name: currency_count
+        description: "Number of distinct currencies present for this date (0 if working day is missing)."
+        tests: [not_null]
+      - name: expected_currency_count
+        description: "Expected number of currencies (excluding base currency). 0 for weekends."
+        tests: [not_null]
+      - name: avg_abs_pct_change
+        description: "Average absolute percent change across all currencies for this date."
+      - name: max_abs_pct_change
+        description: "Maximum absolute percent change across all currencies for this date."
+      - name: alert
+        description: |
+          Alert flag: 'MISSING_DATA' if working day has no data,
+          'INCOMPLETE_DATA' if missing required currencies,
+          'LARGE_CHANGE' if max_abs_pct_change > 1%,
+          null if no issues.
+
+  - name: mart_fx_rolling_stats
+    description: |
+      Rolling 7d and 30d min/max/avg rate per currency; range_pct for volatility analysis.
+      Useful for volatility dashboards and range analysis.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - rate_date
+              - currency
+    columns:
+      - name: rate_date
+        description: "Business date of the FX rate."
+        tests: [not_null]
+      - name: currency
+        description: "Three-letter ISO currency code."
+        tests: [not_null]
+      - name: rate
+        description: "Units of currency per 1 unit of base currency."
+        tests: [not_null]
+      - name: rate_min_7d
+        description: "Minimum rate over the 7-day rolling window (inclusive of current day)."
+      - name: rate_max_7d
+        description: "Maximum rate over the 7-day rolling window (inclusive of current day)."
+      - name: rate_avg_7d
+        description: "Average rate over the 7-day rolling window (inclusive of current day)."
+      - name: rate_min_30d
+        description: "Minimum rate over the 30-day rolling window (inclusive of current day)."
+      - name: rate_max_30d
+        description: "Maximum rate over the 30-day rolling window (inclusive of current day)."
+      - name: rate_avg_30d
+        description: "Average rate over the 30-day rolling window (inclusive of current day)."
+      - name: range_pct_7d
+        description: "7-day range as percentage: (max - min) / min."
+      - name: range_pct_30d
+        description: "30-day range as percentage: (max - min) / min."
+
