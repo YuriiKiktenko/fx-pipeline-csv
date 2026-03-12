@@ -133,10 +133,15 @@ with DAG(
         op_kwargs={"hash_id": "{{ ti.xcom_pull(task_ids='detect_late_data')['hash_id'] }}"},
     )
 
-    dbt_build = BashOperator(
-        task_id="dbt_build_all",
-        bash_command="dbt build --fail-fast --project-dir /opt/airflow/dbt/fx_dbt",
+    dbt_build_staging = BashOperator(
+        task_id="dbt_build_staging",
+        bash_command="dbt build --fail-fast --project-dir /opt/airflow/dbt/fx_dbt --select staging",
+    )
+
+    dbt_build_marts = BashOperator(
+        task_id="dbt_build_marts",
+        bash_command="dbt build --fail-fast --project-dir /opt/airflow/dbt/fx_dbt --select marts",
     )
 
 
-    ingest_zip >> extract_csv >> load_raw >> build_long >> build_stage >> update_core >> detect_late >> data_check >> dbt_build
+    ingest_zip >> extract_csv >> load_raw >> build_long >> build_stage >> update_core >> detect_late >> data_check >> dbt_build_staging >> dbt_build_marts
