@@ -35,6 +35,9 @@ echo "==> update repo (origin/main)"
 git fetch origin
 git reset --hard origin/main
 
+echo "==> install dbt packages (dbt deps in airflow-cli)"
+docker compose run --rm airflow-cli bash -c "cd /opt/airflow/dbt/fx_dbt && dbt deps"
+
 if [[ "$SKIP_AIRFLOW_INIT" -eq 1 ]]; then
   echo "==> docker compose up (SKIP_AIRFLOW_INIT=1)"
   SKIP_AIRFLOW_INIT=1 docker compose up -d
