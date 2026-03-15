@@ -543,3 +543,51 @@ Mart models:
 * **mart_fx_rolling_stats**. Rolling 7d and 30d min/max/avg and range_pct per currency. For volatility and range analysis.
 
 Output: dbt tasks run after the short-circuit. Looker Studio reads the mart tables produced by dbt.
+
+# Step 10 — Alerting, Retries, and Backfill
+
+## Goal
+
+Make the pipeline resilient to transient failures (retries), support backfilling past dates, and make failures and late-data findings visible. Alerting is via task failure and logs. Optional integration with Airflow failure notifications (e.g. email) stays in the platform.
+
+---
+
+## Potential Problems
+
+* Transient errors (network, provider timeout) cause unnecessary DAG failure.
+* Retrying could redo heavy work (download, load, transform) and waste time or create duplicate state.
+* Backfill runs could run late-data diff or dbt for every date and produce noise or long runtimes.
+* No signal when the DAG fails or when late data is detected.
+
+---
+
+## Mitigations
+
+* Pipeline is built in an idempotent way. Retries do not harm. In the current DAG each task retries up to 3 times. On retry the pipeline avoids doing the same work twice. Retries only re-run the minimal work that failed.
+* For backfill `ingest_zip_snapshot` still runs. If the latest valid snapshot already exists, it returns it without download. If not, it downloads as usual.
+* Derive `rate_date` from the interval so each run processes one logical date. 
+* Skip steps that are not needed for backfill (late-data diff, dbt).
+* dbt runs only on scheduled and manual runs. To backfill a period and then refresh marts: backfill the date range (dbt is skipped), then run a manual run for the final date. The manual run will run dbt and refresh marts for that scope.
+* Rely on Airflow for failure visibility. Task failure and logs. Data quality step raises on violation so the task fails.
+
+---
+
+## Implementation Notes
+
+Retries:
+
+* DAG `default_args`: `retries=3`, `retry_delay=timedelta(minutes=5)`. All tasks inherit. On failure a task is retried up to 3 times with 5 minutes between attempts.
+* Idempotency and reuse. Ingest skips upload if hash exists. Extract skips if CSV already in GCS. load_raw skips if snapshot table exists and is populated. build_long_raw skips if `fx_raw_long` already has that hash. A retry reuses existing artifacts and only re-executes from the point of failure.
+
+Backfill:
+
+* DAG uses `catchup=False`. Backfill is explicit (Airflow backfill or manual trigger for a date range). On backfill `ingest_zip_snapshot` still runs. If the latest valid snapshot already exists, it returns it without download. If not, it downloads as usual.
+* `rate_date` for merge and data check from `data_interval_start.date()` when `run_type` is `scheduled` or `backfill`. For manual runs `rate_date` comes from `dag_run.conf["rate_date"]`.
+* Steps skipped on backfill: ingest (reusing latest ingested zip), late-data diff (runs only when `run_type == 'scheduled'`), dbt (ShortCircuitOperator allows only `scheduled` or `manual`). Backfill runs ingest, extract, load raw, build long, build stage, merge, data check. Each step short-exits if the work is already done (e.g. hash exists, table already populated).
+* To refresh marts after a backfill run a manual run with `rate_date` set to the final date of the backfilled period. That run will execute dbt and update the marts.
+
+Alerting:
+
+* No outbound alerts (email, Slack) in code. Task failure is the signal. Airflow can be configured to send on failure (e.g. email callback).
+* Late-data: log warning with diff counts when any diffs are found. Diff table `fx_meta.fx_late_data_diff` is available for dashboards or downstream alerts.
+* Data quality: raise on violation so the task fails. Optional: use `mart_fx_quality_daily.alert` in BI for monitoring.
