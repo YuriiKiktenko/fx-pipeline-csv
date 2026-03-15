@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 
 from airflow import DAG  # type: ignore
+from airflow.operators.python import ShortCircuitOperator  # type: ignore
 from airflow.providers.standard.operators.python import PythonOperator  # type: ignore
 from airflow.providers.standard.operators.bash import BashOperator  # type: ignore
 from airflow.timetables.interval import CronDataIntervalTimetable  # type: ignore
@@ -77,6 +78,11 @@ def check_data_quality_wrapper(hash_id, dag_run, data_interval_start=None, data_
     raise AirflowFailException(f"Unsupported run_type={dag_run.run_type!r}")
 
 
+def should_run_dbt(dag_run):
+    run_type = getattr(dag_run.run_type, "value", dag_run.run_type).lower()
+    return run_type == "scheduled"
+
+
 default_args = {
     "owner": "airflow",
     "retries": 3,
@@ -142,6 +148,11 @@ with DAG(
         op_kwargs={"hash_id": "{{ ti.xcom_pull(task_ids='detect_late_data')['hash_id'] }}"},
     )
 
+    run_dbt = ShortCircuitOperator(
+        task_id="should_run_dbt",
+        python_callable=should_run_dbt,
+    )
+
     dbt_build_staging = BashOperator(
         task_id="dbt_build_staging",
         bash_command="dbt build --fail-fast --project-dir /opt/airflow/dbt/fx_dbt --select staging",
@@ -153,4 +164,4 @@ with DAG(
     )
 
 
-    ingest_zip >> extract_csv >> load_raw >> build_long >> build_stage >> update_core >> detect_late >> data_check >> dbt_build_staging >> dbt_build_marts
+    ingest_zip >> extract_csv >> load_raw >> build_long >> build_stage >> update_core >> detect_late >> data_check >> run_dbt >> dbt_build_staging >> dbt_build_marts
