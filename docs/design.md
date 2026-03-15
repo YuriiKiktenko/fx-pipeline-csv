@@ -41,8 +41,8 @@ Phase B always reads from the **latest full-history table** produced by Phase A 
 7. Detect late data by comparing recent historical values with the existing core table and emit alerts  
 8. Check data for fullfilness and quality (post-merge monitoring)
 9. Build dbt models (staging and marts)  
-10. Expose marts to Looker Studio  
-11. Implement alerting, retries, and backfill logic 
+10. Implement alerting, retries, and backfill logic 
+11. Expose marts to Looker Studio  
 
 
 ---
@@ -483,3 +483,63 @@ Steps:
 7. Log success otherwise.
 
 Output for downstream steps `{hash_id}`
+
+# Step 9 - Build dbt Models (Staging and Marts)
+
+## Goal
+
+Build analytics-ready staging and mart models from the core daily fact table using dbt. Staging models clean and reshape data. Mart models provide wide daily rates (multiple base currencies), percent change, quality metrics, and rolling statistics for BI and reporting (e.g. Looker Studio).
+
+---
+
+## Potential Problems
+
+* dbt runs on backfill could rebuild large tables repeatedly.
+* Staging and mart models depend on vars. Misconfiguration causes wrong filters or missing columns.
+* Marts must read from up-to-date staging so run order matters.
+
+---
+
+## Mitigations
+
+* Run dbt only for `scheduled` and `manual` run types. Use a ShortCircuitOperator so backfill skips dbt.
+* Define one source `fx_core.fx_core_daily` in dbt.
+* Centralise vars in `dbt_project.yml`.
+* Run staging first, then marts in the DAG so refs resolve. Use `dbt build --fail-fast` so one failure fails the task.
+
+---
+
+## Implementation Notes
+
+Orchestration (Airflow):
+
+* After `check_data_quality`, a ShortCircuitOperator `should_run_dbt` runs. Callable returns True only when `run_type` is `scheduled` or `manual`. Otherwise the DAG short-circuits and downstream dbt tasks are skipped.
+* Two BashOperators run dbt from the project directory:
+  * `dbt_build_staging`: `dbt build --fail-fast --select staging`
+  * `dbt_build_marts`: `dbt build --fail-fast --select marts`
+* Order: `dbt_build_staging` then `dbt_build_marts`.
+
+Source:
+
+* One source: `fx_core.fx_core_daily`.
+
+dbt vars (from `dbt_project.yml`):
+
+* `fx_required_currencies` - list of ISO codes (e.g. EUR, USD, GBP, JPY, CHF, CAD, AUD).
+* `fx_base_currency` - base currency for rates (e.g. EUR).
+* `fx_start_date` - lower bound for `rate_date` filter (e.g. `2026-01-01`).
+* `fx_large_change_threshold` - threshold for large day-over-day change in quality alerts (e.g. 0.01).
+
+Staging models:
+
+* **stg_fx_rates** Filters and cleans core daily rates for the required currencies and date range. Adds rate_month and base_currency.
+* **stg_fx_rates_wide** Pivots staging to one row per rate_date with one column per currency. Used by marts.
+
+Mart models:
+
+* **mart_fx_daily**. Wide daily table with EUR, USD, and GBP as base currencies.
+* **mart_fx_pct_change**. Day-over-day percent change per currency.
+* **mart_fx_quality_daily**. Daily quality metrics and alert flags (missing data, incomplete currencies, large change). For monitoring.
+* **mart_fx_rolling_stats**. Rolling 7d and 30d min/max/avg and range_pct per currency. For volatility and range analysis.
+
+Output: dbt tasks run after the short-circuit. Looker Studio reads the mart tables produced by dbt.
