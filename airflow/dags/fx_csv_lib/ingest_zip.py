@@ -12,6 +12,7 @@ from fx_csv_lib.helpers import (
     upload_file_to_blob,
     validate_zip,
     get_meta_row_by_hash,
+    get_latest_meta_row,
     validate_gcs_blob,
     validate_meta_row,
 )
@@ -19,19 +20,21 @@ from fx_csv_lib.helpers import (
 logger = logging.getLogger(__name__)
 
 
-def ingest_zip_snapshot():
+def ingest_zip_snapshot(run_type = "manual"):
     """
     Ingest a full-history ECB FX ZIP snapshot in an idempotent and integrity-safe manner.
 
     Workflow:
-        1) Download the ECB ZIP to a local temporary file (streamed, size-limited).
-        2) Validate ZIP integrity and structure (single CSV at root).
-        3) Compute a SHA-256 hash_id of the ZIP content.
-        4) If metadata for this hash_id already exists:
+        1) If run_type is not "scheduled": get latest hash_id from metadata log and
+        verify that ZIP exists in bucket and return hash_id (no download early return).
+        2) Download the ECB ZIP to a local temporary file (streamed, size-limited).
+        3) Validate ZIP integrity and structure (single CSV at root).
+        4) Compute a SHA-256 hash_id of the ZIP content.
+        5) If metadata for this hash_id already exists:
             - Validate required metadata fields.
             - Verify the referenced GCS object exists and matches hash_id and size.
             - Return early.
-        5) Otherwise:
+        6) Otherwise:
             - Upload the ZIP to a content-addressed GCS location.
             - Validate the final object.
             - Insert metadata using an insert-only MERGE.
@@ -55,6 +58,16 @@ def ingest_zip_snapshot():
         log_table_fqn = f"{cfg.GC_PROJECT_ID}.{cfg.BQ_META_DATASET}.{cfg.BQ_META_LOG_TABLE}"
 
         storage_client = storage.Client(project=cfg.GC_PROJECT_ID)
+
+        if run_type != "scheduled":
+            meta_row = get_latest_meta_row(bq_client, log_table_fqn, ["gcs_zip_uri", "zip_size"])
+            if meta_row and meta_row.get("gcs_zip_uri") and meta_row.get("zip_size"):
+                hash_id = meta_row["hash_id"]
+                logger.info(f"Non-scheduled run: using latest hash from log (no download): hash_id={hash_id}")
+                validate_gcs_blob(storage_client, meta_row["gcs_zip_uri"], hash_id, meta_row["zip_size"])
+                logger.info("Existing snapshot found in meta and correct ZIP exists in GCS")
+                return {"hash_id": hash_id}
+            logger.info("Non-scheduled run: no meta row or incomplete, proceeding with download as usual")
 
         with tempfile.NamedTemporaryFile(prefix="fx_zip_", suffix=".zip", delete=False) as tmp:
             zip_tmp_path = tmp.name

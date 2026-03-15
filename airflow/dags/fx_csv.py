@@ -16,6 +16,15 @@ from fx_csv_lib.detect_late import detect_late_data
 from fx_csv_lib.data_check import check_data_quality
 
 
+def ingest_zip_wrapper(dag_run):
+    run_type = getattr(dag_run.run_type, "value", dag_run.run_type).lower()
+
+    if run_type in {"manual", "scheduled", "backfill"}:
+        return ingest_zip_snapshot(run_type=run_type)
+
+    raise AirflowFailException(f"Unsupported run_type={dag_run.run_type!r}")   
+
+
 def merge_daily_rates_wrapper(hash_id, dag_run, data_interval_start=None, data_interval_end=None):
     run_type = getattr(dag_run.run_type, "value", dag_run.run_type).lower()
 
@@ -88,7 +97,7 @@ with DAG(
 ) as dag:
     ingest_zip = PythonOperator(
         task_id="ingest_zip_snapshot",
-        python_callable=ingest_zip_snapshot,
+        python_callable=ingest_zip_wrapper,
     )
 
     extract_csv = PythonOperator(

@@ -109,6 +109,34 @@ def validate_zip(local_path: str) -> str:
     return csv_name
 
 
+def get_latest_meta_row(bq_client: BigQueryClient, table_fqn: str, fields: list[str]) -> dict | None:
+    """
+    Fetch the most recent metadata row by ingested_at.
+    Returns a dict with hash_id and requested fields or None if the table is empty.
+    """
+    if not fields:
+        raise ValueError("fields must be a non-empty list")
+
+    select_list = list(dict.fromkeys(["hash_id", *fields]))
+    bad_fields = set(select_list) - ALLOWED_META_FIELDS
+    if bad_fields:
+        raise ValueError(f"Unsupported fields requested: {sorted(bad_fields)}")
+
+    select_fields = ", ".join(select_list)
+    
+    query = f"""
+    SELECT {select_fields}
+    FROM `{table_fqn}`
+    ORDER BY ingested_at DESC
+    LIMIT 1
+    """
+    job = bq_client.query(query)
+    row = next(job.result(), None)
+    if row is None:
+        return None
+    return {field: row[field] for field in select_list}
+
+
 def get_meta_row_by_hash(bq_client: BigQueryClient, table_fqn: str, hash_id: str, fields: list[str]) -> dict | None:
     """
     Fetch a metadata row by hash_id.
