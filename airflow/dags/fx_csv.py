@@ -79,7 +79,7 @@ def check_data_quality_wrapper(hash_id, dag_run, data_interval_start=None, data_
 
 def should_run_dbt(dag_run):
     run_type = getattr(dag_run.run_type, "value", dag_run.run_type).lower()
-    return run_type == "scheduled"
+    return run_type in {"scheduled", "manual"}
 
 
 default_args = {
