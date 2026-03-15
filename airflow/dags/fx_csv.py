@@ -1,8 +1,7 @@
 from datetime import date, datetime, timedelta
 
 from airflow import DAG  # type: ignore
-from airflow.operators.python import ShortCircuitOperator  # type: ignore
-from airflow.providers.standard.operators.python import PythonOperator  # type: ignore
+from airflow.providers.standard.operators.python import PythonOperator, ShortCircuitOperator  # type: ignore
 from airflow.providers.standard.operators.bash import BashOperator  # type: ignore
 from airflow.timetables.interval import CronDataIntervalTimetable  # type: ignore
 from airflow.exceptions import AirflowFailException  # type: ignore
