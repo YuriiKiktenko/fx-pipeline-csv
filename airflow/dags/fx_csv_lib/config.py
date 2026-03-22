@@ -38,8 +38,11 @@ MAX_ZIP_SIZE = 10 * 1024 * 1024  # 10 MB
 
 REQUIRED_CURRENCIES = [
     "USD",
-    "AUD",
+    "GBP",
+    "JPY",
+    "CHF",
     "CAD",
+    "AUD",
 ]
 
 HOLIDAYS = []
